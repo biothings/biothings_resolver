@@ -1,8 +1,10 @@
 import collections.abc
+from enum import Enum
 from typing import Any, Dict, Iterator, Callable, Optional, List, Tuple, \
     Mapping, Set, Iterable
-from .agents import IDLookupAgent
 from collections import OrderedDict, defaultdict
+
+from .agents import IDLookupAgent
 
 
 class IDPropertyContainer(collections.abc.MutableMapping):
@@ -194,6 +196,13 @@ class LRU(collections.abc.MutableMapping):
         self._od.clear()
 
 
+class IDOrigin(Enum):
+    UNDEFINED = 0
+    DOCUMENT = 1
+    FINAL = 2
+    INTERMEDIATE = 3
+
+
 class IDStructure(collections.abc.MutableMapping):
     def __init__(self, mapping: Optional[Mapping] = None):
         super(IDStructure, self).__init__()
@@ -204,6 +213,7 @@ class IDStructure(collections.abc.MutableMapping):
             self._data = dict(mapping)
         else:
             self._data = {}
+        self.origin = defaultdict(lambda: IDOrigin.UNDEFINED)
 
     def __getitem__(self, k):
         return self._data[k]
@@ -243,7 +253,8 @@ class IDStructure(collections.abc.MutableMapping):
 
     def set_id_value(self, id_type: str, id_value: str,
                      agent_name: Optional[str] = None,
-                     trace_value: Any = None):
+                     trace_value: Any = None,
+                     origin: Optional[IDOrigin] = None):
         if self.tracing and agent_name:
             self._data[id_type] = id_value
             if trace_value:
@@ -252,3 +263,4 @@ class IDStructure(collections.abc.MutableMapping):
                 self.trace.append((agent_name, id_value))
         else:
             self[id_type] = id_value
+        self.origin[id_type] = origin
