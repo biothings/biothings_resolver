@@ -24,10 +24,10 @@ import itertools
 import logging
 from collections import defaultdict
 from functools import wraps
-from typing import List, Dict, Iterable, Optional, Tuple, Sequence, Mapping, \
-    Union, Callable, FrozenSet
+from typing import List, Dict, Optional, Tuple, Union, Callable, Iterable, \
+    Generator, Sequence, Mapping
 
-from .containers import AgentsContainer, IDPropertyContainer, IDStructure
+from .containers import AgentsContainer
 from .utils import dict_get_nested, transform_str
 
 
@@ -47,14 +47,15 @@ class IDLookup:
         self.agents = AgentsContainer(cache_size=128)
         self.batch_size = 1000
         # now we store failed processors on a per id basis
-        self.id_failed_edges = defaultdict(IDPropertyContainer)
+        self.id_failed_agents = {}
 
-        self.id_key_normalizer: Dict[str, Callable[[str], str]] = {}
         self.id_value_input_transforms: Dict[str, List[Callable[[str], Optional[str]]]] = {}
         self.id_value_output_transforms: Dict[str, List[Callable[[str], Optional[str]]]] = {}
 
-        self.tracing = False
-        self.last_batch = None
+        # (id_t, id_v): List[(prev. id_t, id_v, agt)]
+        self.resolver_trace: Dict[Tuple[str, str], List[tuple]] = {}
+
+        self.document_resolve_id_field = '_id'
 
         if input_types:
             for input_type, input_field in input_types:
@@ -73,30 +74,6 @@ class IDLookup:
     def remove_input_field(self, id_type: str):
         """Remove a input field"""
         del self.in_fields[id_type]
-
-    def reset_id_failed_edges(self):
-        self.id_failed_edges.clear()
-
-    def add_id_key_normalizer(self, id_type: str, normalizer: Callable[[str], str]) -> None:
-        """Set a id_value normalizer for id_type
-
-        The result of this is used as keys in a dictionary to lookup properties related to id_type:id_value.
-        Think of this as a easy way to get out of properly implementing a hash function.
-
-
-        Examples:
-            For instance, if id_values for id_type is case insensitive, then it is okay to do this
-            >>> lookup = IDLookup()
-            >>> lookup.add_id_key_normalizer('id_type', str.lower)
-
-            Then 'ID_Value', 'id_Value', 'id_value' will all map to 'id_value' and share the same properties.
-
-        Args:
-            id_type: Type of identity
-            normalizer: Function to normalize the id_value to keys.
-        """
-        self.reset_id_failed_edges()
-        self.id_key_normalizer[id_type] = normalizer
 
     def add_id_transforms(self, direction: str, id_type: str, normalizer: Callable[[str], Optional[str]]) -> None:
         """Add id_value transformations on input/output, when transforming documents
@@ -128,29 +105,6 @@ class IDLookup:
         else:
             raise ValueError(f"Invalid direction: {direction}")
 
-    def get_shortest_path(self, failed_agents: frozenset,
-                          available_sources: Iterable[str]) -> \
-            Optional[List[str]]:
-        """Find the path with lowest cost to most preferred destination
-
-        Args:
-            failed_agents:
-            available_sources:
-
-        Returns:
-
-        """
-        # build graph
-        available_sources = set(available_sources)
-        # return on first available destination in order of preference
-        for destination in self.preferred:
-            if destination in available_sources:
-                # we already have what we want, skipping
-                self.logger.debug("%s is already present, no path needed, returning None", destination)
-                return None
-            return self.agents.shortest_path(
-                available_sources, destination, failed_agents)
-
     def __call__(self, func):
         """Decorates a data_loading function
 
@@ -172,170 +126,230 @@ class IDLookup:
                     self.logger.debug("no more documents, returning.")
                     break
                 self.logger.debug("got %d documents input in this batch", num_docs)
-                new_ids = self.lookup_documents(chunk_docs)
-                for idx, doc in enumerate(chunk_docs):
-                    out_doc = copy.deepcopy(doc)
-                    new_id = new_ids[idx]
-                    self.logger.debug("got new id %s", new_id)
-                    if new_id is not None:
-                        out_doc['_id'] = new_id
-                    else:
-                        pass
-                    yield out_doc
+                yield from self.resolve_document(chunk_docs)
             return None
         return wrapped_f
 
-    def failed_agents(self, id_dict: Mapping[str, str]) -> FrozenSet[str]:
-        failed = set()
-        for id_type, id_value in id_dict.items():
-            failed.update(
-                self.id_failed_edges[id_type].get(id_value, set()))
-        return frozenset(failed)
-
-    def lookup_identifiers(self, ids: Sequence[Dict[str, str]]) \
-            -> List[Optional[Tuple[str, Union[str, List[str]]]]]:
-        """ Lookup preferred IDs given IDs, without performing transforms
-
-        Args:
-            ids: Dictionaries containing id_type:id_value
-        Returns:
-            List of IDs resulting from lookup, in the same order as input.
-            For each element in the list, None means no result was found.
-            A Tuple contains (id_type, id_values).
-            id_values is either a str or a list of str, depending on settings
-            for duplication/multiple results.
-        """
-        lookup_dicts = [IDStructure(id_dict) for id_dict in ids]
-        for idstruct in lookup_dicts:
-            idstruct.tracing = self.tracing
-        output = [None] * len(ids)
-        orig_indices: List[int] = list(range(len(lookup_dicts)))
-        lookup_done = [False] * len(lookup_dicts)
-        while not all(lookup_done):
-            # Create a DAG for topological sort
-            # here the 'edge' is a node in the graph
-            agent_lookup_indices = {}
-            dep_graph = {}
-            for idx, id_dict in enumerate(lookup_dicts):
-                if lookup_done[idx]:
-                    self.logger.debug("%s is done, skip.", id_dict)
-                    continue
-                failed_agents = self.failed_agents(id_dict)
-                avail_sources = id_dict.keys()
-                path = self.get_shortest_path(failed_agents, avail_sources)
-                if path is None:
-                    # no path found (either no available path or we already have the result), mark as done
-                    lookup_done[idx] = True
-                    self.logger.debug("no path found")
-                    continue
-                path_length = len(path)
-                self.logger.debug("path: %s", ",".join(path))
-                path = path[::-1]  # reversed
-                for agent_idx, agent_name in enumerate(path):
-                    prerequisites = dep_graph.setdefault(agent_name, set())
-                    if agent_idx + 1 < path_length:
-                        prerequisites.add(path[agent_idx + 1])
-                    agent_lookup_indices.setdefault(agent_name, []).append(idx)
-            # sort DAG
-            agents_order = []
-            zero_indegree = [agent_name for agent_name, deps in
-                             dep_graph.items() if len(deps) == 0]
-            while zero_indegree:
-                agent_name = zero_indegree.pop()
-                agents_order.append(agent_name)
-                del dep_graph[agent_name]
-                for other_agent, deps in dep_graph.items():
-                    if agent_name in deps:
-                        deps.remove(agent_name)
-                        # list is slightly faster in our use case so no sets
-                        # and we don't want this to run multiple times..
-                        if len(deps) == 0:
-                            zero_indegree.append(other_agent)
-            if dep_graph:
-                raise RuntimeError("Loop in dependency graph for agents")
-            for agent_name in agents_order:
-                source, target, _, edge = self.agents.raw_agents[agent_name]
-                # source_id_dict = {lookup_dicts[idx][source]: idx for idx in indices}
-                source_id_dict = {}
-                for idx in set(agent_lookup_indices[agent_name]):
-                    source_id = lookup_dicts[idx].get(source, None)
-                    if source_id is not None:
-                        source_id_dict.setdefault(source_id, []).append(idx)
-                results = edge.lookup(source_id_dict.keys())
-                for source_id, indices in source_id_dict.items():
-                    result = results.get(source_id, None)
+    def resolve_identifier(self, ids: Sequence[Mapping[str, str]],
+                           expand: bool) -> \
+            List[Dict[str, List[str]]]:
+        input_ids: List[Dict[str, List[str]]] = []
+        # convert input
+        for id_struct in ids:
+            d = {}
+            for id_t, id_v in id_struct.items():
+                # convert each id to list of str
+                if isinstance(id_v, list):
+                    d[id_t] = [str(x) for x in id_v]
+                else:
+                    d[id_t] = [str(id_v)]
+            input_ids.append(d)
+        while True:
+            # build lookup path for each id
+            resolve_q = self._build_resolve_queue(input_ids, expand)
+            if len(resolve_q) == 0:
+                break  # exit loop when nothing to do
+            agent_resolve_id_info = {}  # what id should each agent lookup
+            paths = []  # "linked" paths, one agent points to the next
+            id_path = [-1] * len(input_ids)
+            for path_idx, (path, items) in enumerate(resolve_q.items()):
+                # populate the items for the first agent in path
+                agent_resolve_id_info.setdefault(path[0], []).extend(items)
+                path_link = {}
+                for a1_name, a2_name in zip(path[:-1], path[1:]):
+                    path_link[a1_name] = a2_name
+                paths.append(path_link)
+                for ids_idx, _, _ in items:
+                    id_path[ids_idx] = path_idx
+            lookup_order = self._topological_sort(resolve_q.keys())
+            for agent_name in lookup_order:
+                src_t, tgt_t, _, agent = self.agents.raw_agents[agent_name]
+                src_values = {}  # map values back to original indices
+                for idx_info in agent_resolve_id_info.get(agent_name, []):
+                    ids_idx, id_t, idv_idx = idx_info
+                    src_idv = input_ids[ids_idx][id_t][idv_idx]  # id_value
+                    src_values.setdefault(src_idv, []).append(ids_idx)
+                if len(src_values.keys()) == 0:
+                    continue  # in the case nothing is left
+                results = agent.lookup(src_values.keys())
+                for src_idv, indices in src_values.items():
+                    result = results.get(src_idv, None)
                     if result is None:
-                        self.id_failed_edges[source].setdefault(
-                            source_id, set()
-                        ).add(agent_name)
-                        self.logger.debug("%s did not process %s:%s", agent_name, source, source_id)
-                        # dequeue is probably more expensive
+                        self.logger.info("%s did not process %s:%s",
+                                          agent_name, src_t, src_idv)
+                        for (id_t, id_v), failed_path in self._build_fail_path(
+                                (src_t, src_idv), [agent_name]
+                        ):
+                            self.id_failed_agents.setdefault(
+                                (id_t, id_v), set()).add(failed_path)
+                            self.logger.debug(
+                                "adding reject path %s to (%s, %s)",
+                                failed_path, id_t, id_v
+                            )
                         continue
-                    if type(result) is list:
-                        # TODO: implement duplication
-                        raise NotImplementedError
-                    result = str(result)  # force cast to string
-                    for idx in indices:
-                        lookup_dicts[idx].set_id_value(target, result, agent_name)
-                        self.logger.debug("got %s:%s -> %s:%s", source, source_id, target, result)
+                    if isinstance(result, list):
+                        result = [str(r) for r in result]
+                    else:
+                        result = [str(result)]
+                    self.logger.debug("got %s:%s -> %s:%s", src_t,
+                                      src_idv, tgt_t, result)
+                    # update trace
+                    for r in result:
+                        self.resolver_trace.setdefault(
+                            (tgt_t, r), []
+                        ).append((src_t, src_idv, agent_name))
+                    for ids_idx in indices:
+                        id_l = input_ids[ids_idx].setdefault(tgt_t, [])
+                        orig_len = len(id_l)
+                        id_l.extend(result)
+                        curr_len = len(id_l)
+                        path_id = id_path[ids_idx]
+                        assert path_id != -1  # -1 means no path assigned
+                        next_agent = paths[path_id].get(agent_name, None)
+                        if next_agent:
+                            agent_resolve_id_info.setdefault(
+                                next_agent, []
+                            ).extend([(ids_idx, tgt_t, v)
+                                      for v in range(orig_len, curr_len)])
+                    self.logger.debug("updated %s", indices)
             # end of while loop
-        for lookup_idx, orig_idx in enumerate(orig_indices):
-            for id_type in self.preferred:
-                if id_type in lookup_dicts[lookup_idx]:
-                    # TODO: implement duplication
-                    output[orig_idx] = (id_type, lookup_dicts[lookup_idx][id_type])
-                    break  # exit loop on first preferred id_type
-        if self.tracing:
-            self.last_batch = lookup_dicts
-        return output
+        return input_ids
 
-    def lookup_documents(self, documents: Sequence[dict]) -> List[Optional[str]]:
-        """Lookup identities from a document, reading from document and applying transformations on input/output
+    # recursively build failure trace
+    def _build_fail_path(self, prev_id: Tuple[str, str], path: list):
+        yield prev_id, tuple(path)
+        if prev_id not in self.resolver_trace:
+            return
+        for id_t, id_v, a_name in self.resolver_trace[prev_id]:
+            new_path = path.copy()
+            new_path.append(a_name)
+            yield from self._build_fail_path((id_t, id_v), new_path)
+
+    @staticmethod
+    def _topological_sort(tasks: Iterable[Iterable[str]]) -> List[str]:
+        # build DAG
+        dep_graph = {}
+        for path in tasks:
+            # not using pairwise, always want the first one
+            path = list(path)[::-1]  # reversed
+            path_length = len(path)
+            for task_idx, task_name in enumerate(path):
+                prerequisites = dep_graph.setdefault(task_name, set())
+                if task_idx + 1 < path_length:
+                    prerequisites.add(path[task_idx + 1])
+        # sort DAG
+        tasks_order = []
+        zero_indegree = [t_name for t_name, deps in
+                         dep_graph.items() if len(deps) == 0]
+        while zero_indegree:
+            task_name = zero_indegree.pop()
+            tasks_order.append(task_name)
+            del dep_graph[task_name]
+            for other_agent, deps in dep_graph.items():
+                if task_name in deps:
+                    deps.remove(task_name)
+                    if len(deps) == 0:
+                        zero_indegree.append(other_agent)
+        if dep_graph:
+            # FIXME: we can break cycles (just requires extra lookup)
+            raise RuntimeError("Loop in dependency graph for agents")
+        return tasks_order
+
+    def _build_resolve_queue(self, input_ids, resolve_all):
+        resolve_queue = {}  # path: starting point tuple
+        for id_idx, id_struct in enumerate(input_ids):
+            # anything we already have has initial cost of 0
+            # hence why we store them and use them as available sources
+            # we store/retrieve failed agents per "starting point"
+            for target in self.preferred:
+                if target in id_struct:
+                    if resolve_all:
+                        continue
+                    else:
+                        break
+                possible_paths = {}
+                for id_t, id_vs in id_struct.items():
+                    for idv_idx, idv in enumerate(id_vs):
+                        rej_starts = self.id_failed_agents.get((id_t, idv), [])
+                        path, cost = self.agents.shortest_path_v2(
+                            id_t, target, rej_starts
+                        )
+                        if path is not None:
+                            possible_paths[(id_t, idv_idx, path)] = cost
+                if len(possible_paths) == 0:
+                    continue
+                id_t, idv_idx, path = min(possible_paths,
+                                          key=possible_paths.get)
+                if path is not None:
+                    resolve_queue.setdefault(path, []).append(
+                        (id_idx, id_t, idv_idx)
+                    )
+                    break  # found a valid path
+            else:  # no valid path found
+                pass
+        return resolve_queue
+
+    def resolve_curie(self):
+        pass
+
+    def resolve_document(self, documents: Iterable[dict]) -> Generator:
+        """Resolve identifiers given a document
 
         Args:
-            documents:
+            documents: a series of documents
 
         Returns:
-            List of identifiers in the same order as the documents
+            List of documents, with duplications when one set of
+            identifiers gives more than one output of the desired
+            identifier type.
         """
         id_dicts = []
+        o_docs = []
         for document in documents:
+            o_docs.append(copy.deepcopy(document))
             id_dict = {}  # {id_type: id_values}
             for id_type, field in self.in_fields.items():
                 if isinstance(field, str):  # obtain value from single field
-                    id_value = dict_get_nested(document, field)
-                elif isinstance(field, Callable):  # obtain value if custom implementation is given
-                    id_value = field(document)
+                    id_v = dict_get_nested(document, field)
+                elif isinstance(field, Callable):
+                    # obtain value using custom implementation given
+                    id_v = field(document)
                 else:
-                    raise RuntimeError("")  # TODO: add message
-                if isinstance(id_value, str):
+                    raise RuntimeError("unrecognized field type")
+                if isinstance(id_v, str):
                     pass  # do nothing when we have str
-                elif id_value is None:
+                elif id_v is None:
                     continue  # skip when None is obtained
                 else:
                     pass
-                transforms = self.id_value_input_transforms.get(id_type, [])
-                id_value = transform_str(id_value, transforms)
-                if id_value is not None:
-                    if not isinstance(id_value, str):
-                        # self.logger.warning("got raw id_value:%r and force converting to str...", id_value)
-                        id_value = str(id_value)
-                        # self.logger.warning("...converted to %s", id_value)
-                    id_dict[id_type] = id_value
-            # end of extracting id_type:id_value for all fields in single document
+                xfrm = self.id_value_input_transforms.get(id_type, [])
+                id_v = transform_str(id_v, xfrm)
+                if id_v is not None:
+                    if not isinstance(id_v, str):
+                        self.logger.warning(
+                            "got raw %s:(%s)%r and force converting to str..."
+                            , id_type, type(id_v).__name__, id_v)
+                        id_v = str(id_v)
+                        self.logger.warning("...converted to %s", id_v)
+                    id_dict[id_type] = id_v
+            # end of extracting for all fields in single document
             id_dicts.append(id_dict)
         # end of extracting IDs from documents
-        output = []
-        for result in self.lookup_identifiers(id_dicts):
-            if isinstance(result, tuple):
-                id_type, id_value = result
-                if isinstance(id_value, list):
-                    # TODO: handle duplication
-                    output.append(id_value[0])
-                else:
-                    transforms = self.id_value_output_transforms.get(id_type, [])
-                    id_value = transform_str(id_value, transforms)
-                    output.append(id_value)
-            else:
-                output.append(None)  # got no preferred result
-        return output
+        for od, res in zip(o_docs, self.resolve_identifier(id_dicts, False)):
+            o_idv = od.get(self.document_resolve_id_field, None)
+            for id_t in self.preferred:
+                if id_t in res:
+                    if len(res[id_t]) > 1:
+                        self.logger.warning("%s->%s(multi)", o_idv, res[id_t])
+                    for id_v in res[id_t]:
+                        xfrm = self.id_value_output_transforms.get(id_t, [])
+                        id_v = transform_str(id_v, xfrm)
+                        new_doc = copy.deepcopy(od)
+                        new_doc[self.document_resolve_id_field] = id_v
+                        self.logger.debug("updated doc ID %s->%s", o_idv, id_v)
+                        yield new_doc
+                    break
+            else:  # did not break from loop == no new id
+                self.logger.debug("did not update %s", o_idv)
+                yield od  # no need to copy
+
