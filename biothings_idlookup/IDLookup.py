@@ -25,7 +25,7 @@ import logging
 from collections import defaultdict
 from functools import wraps
 from typing import List, Dict, Optional, Tuple, Union, Callable, Iterable, \
-    Generator, Sequence, Mapping
+    Generator, Sequence, Mapping, Set
 
 from .containers import AgentsContainer
 from .utils import dict_get_nested, transform_str
@@ -53,7 +53,7 @@ class IDLookup:
         self.id_value_output_transforms: Dict[str, List[Callable[[str], Optional[str]]]] = {}
 
         # (id_t, id_v): List[(prev. id_t, id_v, agt)]
-        self.resolver_trace: Dict[Tuple[str, str], List[tuple]] = {}
+        self.resolver_trace: Dict[Tuple[str, str], Set[tuple]] = {}
 
         self.document_resolve_id_field = '_id'
 
@@ -196,8 +196,8 @@ class IDLookup:
                     # update trace
                     for r in result:
                         self.resolver_trace.setdefault(
-                            (tgt_t, r), []
-                        ).append((src_t, src_idv, agent_name))
+                            (tgt_t, r), set()
+                        ).add((src_t, src_idv, agent_name))
                     for ids_idx in indices:
                         id_l = input_ids[ids_idx].setdefault(tgt_t, [])
                         orig_len = len(id_l)
@@ -217,10 +217,12 @@ class IDLookup:
 
     # recursively build failure trace
     def _build_fail_path(self, prev_id: Tuple[str, str], path: list):
-        yield prev_id, tuple(path)
+        yield prev_id, tuple(reversed(path))
         if prev_id not in self.resolver_trace:
             return
         for id_t, id_v, a_name in self.resolver_trace[prev_id]:
+            if a_name in path:
+                continue
             new_path = path.copy()
             new_path.append(a_name)
             yield from self._build_fail_path((id_t, id_v), new_path)
