@@ -132,7 +132,7 @@ class IDLookup:
 
     def resolve_identifier(self, ids: Sequence[Mapping[str, str]],
                            expand: bool) -> \
-            List[Dict[str, List[str]]]:
+            Generator[Dict[str, List[str]], None, None]:
         input_ids: List[Dict[str, List[str]]] = []
         # convert input
         for id_struct in ids:
@@ -201,6 +201,7 @@ class IDLookup:
                     for ids_idx in indices:
                         id_l = input_ids[ids_idx].setdefault(tgt_t, [])
                         orig_len = len(id_l)
+                        # FIXME: deal with dupes
                         id_l.extend(result)
                         curr_len = len(id_l)
                         path_id = id_path[ids_idx]
@@ -213,7 +214,17 @@ class IDLookup:
                                       for v in range(orig_len, curr_len)])
                     self.logger.debug("updated %s", indices)
             # end of while loop
-        return input_ids
+        for id_struct in input_ids:
+            od = {}
+            for id_t in self.preferred:
+                if id_t in id_struct:
+                    # FIXME: same as above
+                    od[id_t] = list(set(id_struct[id_t]))
+                    if expand:
+                        continue
+                    else:
+                        break
+            yield od
 
     # recursively build failure trace
     def _build_fail_path(self, prev_id: Tuple[str, str], path: list):
