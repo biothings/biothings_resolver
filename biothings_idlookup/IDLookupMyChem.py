@@ -33,6 +33,54 @@ class IDLookupMyChem(IDLookup):
         self.agents.add('drugbank', 'inchikey', BioThingsAPIAgent('chem', 'drugbank.id', inchikey_fields))
         self.agents.add('chembl', 'inchikey', BioThingsAPIAgent('chem', 'chembl.molecule_chembl_id', inchikey_fields))
 
+        # these agents have not been verified
+        self.agents.add(
+            'unii', 'inchikey',
+            BioThingsAPIAgent('chem', 'unii.unii', 'unii.inchikey'),
+            cost=1000.0
+        )
+        self.agents.add(
+            'inchikey', 'unii',
+            BioThingsAPIAgent('chem', 'unii.inchikey', 'unii.unii'),
+            cost=1000.0
+        )
+        self.agents.add(
+            'pharmgkb', 'pubchem',
+            BioThingsAPIAgent('chem', 'pharmgkb.id',
+                              'pharmgkb.xrefs.pubchem.cid'),
+            cost=1000.0
+        )
+        self.agents.add(
+            'pubchem', 'pharmgkb',
+            BioThingsAPIAgent('chem', 'pharmgkb.xrefs.pubchem.cid',
+                              'pharmgkb.id'),
+            cost=1000.0
+        )
+        self.agents.add(
+            'pharmgkb', 'rxnorm',
+            BioThingsAPIAgent('chem', 'pharmgkb.id',
+                              'pharmgkb.xrefs.rxnorm'),
+            cost=1000.0
+        )
+        self.agents.add(
+            'inchikey', 'drugbank',
+            BioThingsAPIAgent('chem', 'drugbank.inchi_key', 'drugbank.id'),
+            cost=1000.0
+        )
+        self.agents.add(
+            'inchikey', 'chebi',
+            BioThingsAPIAgent('chem', 'chebi.inchikey', 'chebi.id'),
+            cost=1000.0
+        )
+        self.agents.add(
+            'inchikey', 'inchi',
+            BioThingsAPIAgent('chem', inchikey_fields, inchi_fields),
+            cost=2000.0
+        )
+
+
+
+
         # we supply a default preference list
         self.preferred = ['inchikey', 'unii', 'rxnorm', 'drugbank', 'chebi',
                           'chembl', 'pubchem', 'drugname']
