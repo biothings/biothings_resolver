@@ -29,6 +29,7 @@ from typing import List, Dict, Optional, Tuple, Union, Callable, Iterable, \
 
 from .containers import AgentsContainer
 from .utils import dict_get_nested, transform_str
+from .curie import split_curie, validate_prefix
 
 
 class IDLookup:
@@ -49,8 +50,11 @@ class IDLookup:
         # now we store failed processors on a per id basis
         self.id_failed_agents = {}
 
-        self.id_value_input_transforms: Dict[str, List[Callable[[str], Optional[str]]]] = {}
-        self.id_value_output_transforms: Dict[str, List[Callable[[str], Optional[str]]]] = {}
+        self.id_v_in_xfrm: Dict[str, List[Callable[[str], Optional[str]]]] = {}
+        self.id_v_out_xfrm: Dict[str, List[Callable[[str], Optional[str]]]] = {}
+
+        self.curie_in_xfrm: Dict[str, Callable[[str], Optional[str]]] = {}
+        self.curie_out_xfrm: Dict[str, Callable[[str], Optional[str]]] = {}
 
         # (id_t, id_v): List[(prev. id_t, id_v, agt)]
         self.resolver_trace: Dict[Tuple[str, str], Set[tuple]] = {}
@@ -99,9 +103,9 @@ class IDLookup:
         """
         # TODO: implement transforms that applies to ALL identity types (old behavior)
         if direction == 'input':
-            self.id_value_input_transforms.setdefault(id_type, []).append(normalizer)
+            self.id_v_in_xfrm.setdefault(id_type, []).append(normalizer)
         elif direction == 'output':
-            self.id_value_output_transforms.setdefault(id_type, []).append(normalizer)
+            self.id_v_out_xfrm.setdefault(id_type, []).append(normalizer)
         else:
             raise ValueError(f"Invalid direction: {direction}")
 
@@ -138,6 +142,11 @@ class IDLookup:
         for id_struct in ids:
             d = {}
             for id_t, id_v in id_struct.items():
+                # FIXME: MOVE to an appropriate place
+                # canonicalize id type
+                id_t = self.agents.prefixes.get(id_t)
+                if not id_t:
+                    continue
                 # convert each id to list of str
                 if isinstance(id_v, list):
                     d[id_t] = [str(x) for x in id_v]
@@ -302,8 +311,28 @@ class IDLookup:
                 pass
         return resolve_queue
 
-    def resolve_curie(self):
-        pass
+    def resolve_curie(self, curies: Sequence[str], expand: bool) -> \
+            Generator[List[str], None, None]:
+        id_l = []
+        for curie in curies:
+            prefix, ref = split_curie(curie)
+            xfrm = self.curie_in_xfrm.get(prefix)
+            if xfrm:
+                id_v = self.curie_in_xfrm[prefix](curie)
+            else:
+                id_v = ref
+            id_l.append({prefix: id_v})
+        for id_resolved in self.resolve_identifier(id_l, expand):
+            output = []
+            for prefix, id_values in id_resolved.items():
+                xfrm = self.curie_out_xfrm.get(prefix)
+                for id_v in id_values:
+                    if xfrm:
+                        id_v = xfrm(id_v)
+                    else:
+                        pass  # no transform
+                    output.append(f"{prefix}:{id_v}")
+            yield output
 
     def resolve_document(self, documents: Iterable[dict]) -> Generator:
         """Resolve identifiers given a document
@@ -335,7 +364,7 @@ class IDLookup:
                     continue  # skip when None is obtained
                 else:
                     pass
-                xfrm = self.id_value_input_transforms.get(id_type, [])
+                xfrm = self.id_v_in_xfrm.get(id_type, [])
                 id_v = transform_str(id_v, xfrm)
                 if id_v is not None:
                     if not isinstance(id_v, str):
@@ -355,7 +384,7 @@ class IDLookup:
                     if len(res[id_t]) > 1:
                         self.logger.warning("%s->%s(multi)", o_idv, res[id_t])
                     for id_v in res[id_t]:
-                        xfrm = self.id_value_output_transforms.get(id_t, [])
+                        xfrm = self.id_v_out_xfrm.get(id_t, [])
                         id_v = transform_str(id_v, xfrm)
                         new_doc = copy.deepcopy(od)
                         new_doc[self.document_resolve_id_field] = id_v

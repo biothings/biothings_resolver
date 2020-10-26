@@ -1,15 +1,81 @@
 import collections.abc
-from enum import Enum
+import warnings
+
 from typing import Any, Dict, Iterator, Callable, Optional, List, Tuple, \
     Mapping, Set, Iterable, Generator
 from collections import OrderedDict, defaultdict
 
 from .agents import IDLookupAgent
+from .biolink_model import prefixes as biolink_prefixes
+from .curie import validate_prefix
+
+
+class CPDict(collections.abc.MutableMapping):
+    """Case Preserving Dictionary"""
+    def __init__(self, *args, **kwargs):
+        self._cf_map: Dict[str, str] = {}
+        self._canonical_dict: Dict[str, Any] = dict(*args, **kwargs)
+        for key in self._canonical_dict:
+            if not self.validate_key(key):
+                raise ValueError(f"Invalid Key ({key})")
+            self._cf_map[self.fold_key_case(key)] = key
+
+    def __setitem__(self, k, v):
+        if not self.validate_key(k):
+            raise ValueError(f"Invalid Key ({k})")
+        cf_key = self.fold_key_case(k)
+        if cf_key in self._cf_map:
+            canon_key = self._cf_map[cf_key]
+            self._canonical_dict[canon_key] = v
+        else:
+            self._cf_map[cf_key] = k
+            self._canonical_dict[k] = v
+
+    def __delitem__(self, k):
+        if not self.validate_key(k):
+            raise KeyError(f"Invalid Key ({k})")
+        canon_key = self._cf_map.pop(self.fold_key_case(k))
+        del self._canonical_dict[canon_key]
+
+    def __getitem__(self, k):
+        if not self.validate_key(k):
+            raise KeyError(f"Invalid Key ({k})")
+        cf_key = self.fold_key_case(k)
+        return self._canonical_dict[self._cf_map[cf_key]]
+
+    def __len__(self) -> int:
+        return len(self._canonical_dict)
+
+    def __iter__(self) -> Iterator:
+        return iter(self._canonical_dict)
+
+    def get_canonical_key(self, key: str) -> str:
+        return self._cf_map[self.fold_key_case(key)]
+
+    @staticmethod
+    def validate_key(key: Any) -> bool:
+        if not isinstance(key, str):
+            return False
+        try:
+            key.encode('ascii')  # only works for 7-bit ascii
+            return True
+        except UnicodeEncodeError:
+            return False
+
+    @staticmethod
+    def fold_key_case(key: str) -> str:
+        return key.lower()
+
+    def __repr__(self):
+        return f"CPDict: {repr(self._canonical_dict)}"
+
+    def __str__(self):
+        return f"CPDict: {str(self._canonical_dict)}"
 
 
 class AgentsContainer:
     def __init__(self, cache_size: int = 128):
-        self._agents: Dict[str, Tuple[str, str, float, IDLookupAgent]] = {}
+        self._agents: Dict[str, Tuple[str, str, float, IDLookupAgent]] = CPDict()
         self.sources: Set[str] = set()
         self.targets: Set[str] = set()
         #: agents where src==tgt, used to verify id_value read from doc
@@ -19,11 +85,41 @@ class AgentsContainer:
         self.graph: Dict[str, Dict[str, List[str]]] = {}
         self.all_paths: Dict[Tuple[str, str],
                              Dict[Tuple[str, ...], float]] = {}
+        self.prefixes = CPDict()
+        for prefix in biolink_prefixes:
+            if prefix == 'DBSNP':
+                # TODO: Workaround for entries w/ diff. cases in biolink-model
+                #  Fix biolink-model or resolve this!!!
+                #  For whatever reason we have both DBSNP and dbSNP
+                continue
+            self.add_prefix(prefix)
+
+    def add_prefix(self, prefix: str):
+        if prefix in self.prefixes:
+            raise ValueError(f"{prefix} already exists")
+        if validate_prefix(prefix):
+            self.prefixes[prefix] = prefix
+        else:
+            raise ValueError(f"{prefix} bad prefix syntax")
 
     def add(self, source: str, target: str, agent: IDLookupAgent,
             cost: float = 1.0, name: Optional[str] = None) -> str:
         if self._frozen:
             raise RuntimeError(self.warn_frozen_msg)
+        canon_src = self.prefixes.get(source)
+        if canon_src:
+            source = canon_src
+        else:
+            warnings.warn(f"{source} is not a recognized prefix", Warning)
+            # add to prefixes anyways after the warning, also shuts up
+            # future warnings
+            self.add_prefix(source)
+        canon_tgt = self.prefixes.get(target)
+        if canon_tgt:
+            target = canon_tgt
+        else:
+            warnings.warn(f"{target} is not a recognized prefix", Warning)
+            self.add_prefix(target)
         if name is None:
             name_base = f'{source}-{target}'
             if name_base not in self._agents:

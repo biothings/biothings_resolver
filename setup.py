@@ -8,6 +8,7 @@ setuptools.setup(
     name="biothings-idlookup",
     version="0.0.2",
     packages=setuptools.find_packages(),
+    include_package_data=True,
     install_requires=[
         'biothings_client>=0.2.1',
     ]
