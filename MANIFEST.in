@@ -1,1 +1,1 @@
-include biothings_idlookup/biolink_model/biolink-model.yaml
+include biothings_resolver/biolink_model/biolink-model.yaml

@@ -1,8 +1,16 @@
-from .IDLookup import IDLookup
+from .Resolver import Resolver
 from . import BioThingsAPIAgent
 
 
-class IDLookupMyChem(IDLookup):
+def _bt_chem(scope, fields):
+    return BioThingsAPIAgent('chem', scope, fields)
+
+
+def _bt_gene(scope, fields):
+    return BioThingsAPIAgent('gene', scope, fields)
+
+
+class ChemResolver(Resolver):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -87,3 +95,38 @@ class IDLookupMyChem(IDLookup):
 
         self.curie_in_xfrm['CHEBI'] = lambda x: x
         self.curie_out_xfrm['CHEBI'] = lambda x: x.replace('CHEBI:', '', 1)
+
+
+class GeneResolver(Resolver):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.agents.add('ENSEMBL', 'NCBIGene',
+                        _bt_gene('ensembl.gene', 'entrezgene'))
+        self.agents.add('NCBIGene', 'ENSEMBL',
+                        _bt_gene('entrezgene', 'ensembl.gene'))
+        field_mappings = [
+            ('FlyBase', 'FLYBASE'),
+            ('HGNC', 'HGNC'),
+            ('MGI', 'MGI'),
+            ('RGD', 'RGD'),
+            ('WormBase', 'WormBase'),
+            ('ZFIN', 'ZFIN'),
+            # ('SGD', 'pantherdb.SGD'),  # Cost = 1.0?
+            # ('UniProtKB', 'pantherdb.uniprot_kb'),
+            # ('PomBase', 'pantherdb.PomBase'),
+            # ('dictyBase', 'pantherdb.dictyBase'),
+        ]
+        for src_t, src_scope in field_mappings:
+            self.agents.add(src_t, 'NCBIGene',
+                            _bt_gene(src_scope, 'entrezgene'))
+            self.agents.add(src_t, 'ENSEMBL',
+                            _bt_gene(src_scope, 'ensembl.gene'))
+            self.agents.add('NCBIGene', src_t,
+                            _bt_gene('entrezgene', src_scope))
+            self.agents.add('ENSEMBL', src_t,
+                            _bt_gene('ensembl.gene', src_scope))
+
+        self.agents.frozen = True
+
+        self.preferred = ['NCBIGene', 'ENSEMBL']

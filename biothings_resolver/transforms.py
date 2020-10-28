@@ -1,6 +1,6 @@
 import re
 from re import Pattern
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional, Union, Sequence
 
 
 def filter_nan(id_value: Any) -> Optional[str]:
@@ -25,4 +25,14 @@ def filter_on_regex(regex: Union[str, Pattern]) -> Callable[[str], Optional[str]
             return None
         else:
             return id_value
+    return f
+
+
+def compose_xfrm(xfrms: Sequence[Callable[[str], Optional[str]]]) -> \
+        Callable[[str], Optional[str]]:
+    xfrms = list(xfrms)
+
+    def f(id_v: str):
+        return None
+
     return f

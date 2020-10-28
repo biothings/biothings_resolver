@@ -192,6 +192,14 @@ class AgentsContainer:
                 # a same agent is not used twice
                 if agent in path:
                     continue
+                # don't visit a node twice
+                past_nodes = set()
+                for path_agent in path:
+                    src, dst, _, _ = self._agents[path_agent]
+                    past_nodes.update({src, dst})
+                _, dst, _, _ = self._agents[agent]
+                if dst in past_nodes:
+                    continue
                 new_path = path.copy()
                 new_path.append(agent)
                 nc = cost + self._agents[agent][2]

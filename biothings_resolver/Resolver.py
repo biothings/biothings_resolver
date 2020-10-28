@@ -1,9 +1,19 @@
 # -*- coding: utf-8 -*-
-""" IDLookup for obtaining different types of identifiers using existing identifiers
+""" Resolver for identifier types of biological entities
 
-(some background info... TO BE WRITTEN)
+Resolver is used to easily cast between various identifier types that
+a biological entity may have. Instead of directly querying an API like
+BioThings or searching for cross-references in a database, Resolver
+provides a unified interface for looking up identifiers in batches. It
+is not only capable of direct queries, it can also perform indirect
+queries: when there is not a direct path an identifier of one type is
+first translated to one or more identifiers of intermediate types,
+before finally obtaining the target identifier type.
 
-One part of the core mechanism is implemented in the `IDLookup` class,
+The `Resolver` class implements the lookup mechanisms. The `Agent` class
+performs the lookups.
+One part of the core mechanism is implemented in the `Resolver` class,
+which runs through va
 which tries to perform the identifier lookup in as little steps as possible, using pathfinding algorithms.
 This functionality can be accessed using the IDLookup.lookup_identity method.
 
@@ -22,17 +32,16 @@ To use an agent, it has to be registered in an `IDLookup` instance.
 import copy
 import itertools
 import logging
-from collections import defaultdict
 from functools import wraps
 from typing import List, Dict, Optional, Tuple, Union, Callable, Iterable, \
-    Generator, Sequence, Mapping, Set
+    Generator, Sequence, Mapping, Set, MutableMapping
 
-from .containers import AgentsContainer
+from .containers import AgentsContainer, CPDict
 from .utils import dict_get_nested, transform_str
-from .curie import split_curie, validate_prefix
+from .curie import split_curie
 
 
-class IDLookup:
+class Resolver:
     """Base class for looking up IDs
 
     Attributes:
@@ -41,8 +50,8 @@ class IDLookup:
 
     """
     def __init__(self, input_types=None):
-        super(IDLookup, self).__init__()
-        self.logger = logging.getLogger('biothings_idlookup')
+        super(Resolver, self).__init__()
+        self.logger = logging.getLogger('biothings_resolver')
         self.preferred: List[str] = []
         self.in_fields: Dict[str, Union[str, Callable[[dict], str]]] = {}
         self.agents = AgentsContainer(cache_size=128)
@@ -50,11 +59,15 @@ class IDLookup:
         # now we store failed processors on a per id basis
         self.id_failed_agents = {}
 
-        self.id_v_in_xfrm: Dict[str, List[Callable[[str], Optional[str]]]] = {}
-        self.id_v_out_xfrm: Dict[str, List[Callable[[str], Optional[str]]]] = {}
+        self.id_v_in_xfrm: \
+            MutableMapping[str, List[Callable[[str], Optional[str]]]] = CPDict()
+        self.id_v_out_xfrm: \
+            MutableMapping[str, List[Callable[[str], Optional[str]]]] = CPDict()
 
-        self.curie_in_xfrm: Dict[str, Callable[[str], Optional[str]]] = {}
-        self.curie_out_xfrm: Dict[str, Callable[[str], Optional[str]]] = {}
+        self.curie_in_xfrm: \
+            MutableMapping[str, Callable[[str], Optional[str]]] = CPDict()
+        self.curie_out_xfrm: \
+            MutableMapping[str, Callable[[str], Optional[str]]] = CPDict()
 
         # (id_t, id_v): List[(prev. id_t, id_v, agt)]
         self.resolver_trace: Dict[Tuple[str, str], Set[tuple]] = {}
@@ -90,15 +103,15 @@ class IDLookup:
         Examples:
             For instance, if a document has may or may not have InChI ids, and pandas reading the document returns NaN,
             it is preferred to have them removed because they are invalid input and slows down lookup.
-            >>> lookup = IDLookup()
+            >>> lookup = Resolver()
             >>> lookup.add_id_transforms('input', 'inchi', lambda s: None if s != s else s)
-            An input can also be skipped based on regex matching, see biothings_idlookup.transforms.filter_regex
+            An input can also be skipped based on regex matching, see biothings_resolver.transforms.filter_regex
 
             For instance, if the output of an PubChem identity needs to be prefixed with 'CID'
-            >>> lookup = IDLookup()
+            >>> lookup = Resolver()
             >>> lookup.add_id_transforms('output', 'pubchem', lambda s: f"CID {s}")
 
-            Some common uses are implemented in biothings_idlookup.transforms and can be used as examples
+            Some common uses are implemented in biothings_resolver.transforms and can be used as examples
             on implementing new transforms
         """
         # TODO: implement transforms that applies to ALL identity types (old behavior)
@@ -185,7 +198,7 @@ class IDLookup:
                     result = results.get(src_idv, None)
                     if result is None:
                         self.logger.info("%s did not process %s:%s",
-                                          agent_name, src_t, src_idv)
+                                         agent_name, src_t, src_idv)
                         for (id_t, id_v), failed_path in self._build_fail_path(
                                 (src_t, src_idv), [agent_name]
                         ):
@@ -369,8 +382,8 @@ class IDLookup:
                 if id_v is not None:
                     if not isinstance(id_v, str):
                         self.logger.warning(
-                            "got raw %s:(%s)%r and force converting to str..."
-                            , id_type, type(id_v).__name__, id_v)
+                            "got raw %s:(%s)%r and force converting to str...",
+                            id_type, type(id_v).__name__, id_v)
                         id_v = str(id_v)
                         self.logger.warning("...converted to %s", id_v)
                     id_dict[id_type] = id_v
@@ -394,4 +407,3 @@ class IDLookup:
             else:  # did not break from loop == no new id
                 self.logger.debug("did not update %s", o_idv)
                 yield od  # no need to copy
-
