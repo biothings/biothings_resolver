@@ -14,6 +14,8 @@ class ChemResolver(Resolver):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
+        # FIXME: add these agents properly
+
         self.agents.add('DRUGBANK', 'PUBCHEM.COMPOUND',
                         BioThingsAPIAgent('chem', ['drugbank.id'], ['pubchem.cid']))
         self.agents.add('PHARMGKB.DRUG', 'DRUGBANK',
@@ -112,8 +114,8 @@ class GeneResolver(Resolver):
             ('RGD', 'RGD'),
             ('WormBase', 'WormBase'),
             ('ZFIN', 'ZFIN'),
+            ('UniProtKB', 'uniprot.Swiss-Prot'),
             # ('SGD', 'pantherdb.SGD'),  # Cost = 1.0?
-            # ('UniProtKB', 'pantherdb.uniprot_kb'),
             # ('PomBase', 'pantherdb.PomBase'),
             # ('dictyBase', 'pantherdb.dictyBase'),
         ]
