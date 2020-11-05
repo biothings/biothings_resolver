@@ -1,3 +1,4 @@
+import copy
 import collections.abc
 import warnings
 
@@ -8,6 +9,65 @@ from collections import OrderedDict, defaultdict
 from .agents import IDLookupAgent
 from .biolink_model import prefixes as biolink_prefixes
 from .curie import validate_prefix
+
+
+class BiolinkModelPrefixes(collections.abc.Mapping):
+    # TODO: merge this and CPDict, these two are pretty similar
+    def __init__(self, case_insensitive: bool = True):
+        self._canonical_prefixes = copy.deepcopy(biolink_prefixes)
+        self._mapping = {}
+        self._case_insensitive = case_insensitive
+        self._setup()
+
+    def _setup(self):
+        canon_maps = [
+            ('FB', 'FlyBase'),
+            ('WB', 'WormBase'),
+            ('DBSNP', 'dbSNP'),
+        ]
+        for alt_form, canon in canon_maps:
+            try:
+                self._canonical_prefixes.pop(alt_form)
+                if self._case_insensitive:
+                    self._mapping[alt_form.lower()] = canon
+                else:
+                    self._mapping[alt_form] = canon
+            except KeyError:
+                pass
+            except (AttributeError, TypeError):  # no lower or can't call
+                self._mapping[alt_form] = canon
+
+        if self._case_insensitive:
+            for prefix in self._canonical_prefixes:
+                try:
+                    self._mapping[prefix.lower()] = prefix
+                except (AttributeError, TypeError):
+                    pass
+
+    def get_canonical_key(self, k):
+        if k in self._canonical_prefixes:
+            return k
+        if k in self._mapping:
+            return self._mapping[k]
+        raise KeyError(k)
+
+    def __getitem__(self, k):
+        if k in self._canonical_prefixes:
+            return self._canonical_prefixes[k]
+        if k in self._mapping:
+            return self._canonical_prefixes[self._mapping[k]]
+        if self._case_insensitive:
+            return self._canonical_prefixes[
+                self._mapping[k.lower()]
+            ]
+        else:
+            raise KeyError(k)
+
+    def __len__(self) -> int:
+        return len(self._canonical_prefixes)
+
+    def __iter__(self):
+        return iter(self._canonical_prefixes)
 
 
 class CPDict(collections.abc.MutableMapping):
