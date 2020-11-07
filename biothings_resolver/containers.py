@@ -2,9 +2,9 @@ import copy
 import collections.abc
 import warnings
 
-from typing import Any, Dict, Iterator, Callable, Optional, List, Tuple, \
-    Mapping, Set, Iterable, Generator
-from collections import OrderedDict, defaultdict
+from typing import Any, Dict, Iterator, Optional, List, Tuple, Set, Iterable, \
+    Generator
+from collections import OrderedDict
 
 from .agents import IDLookupAgent
 from .biolink_model import prefixes as biolink_prefixes
@@ -135,7 +135,8 @@ class CPDict(collections.abc.MutableMapping):
 
 class AgentsContainer:
     def __init__(self, cache_size: int = 128):
-        self._agents: Dict[str, Tuple[str, str, float, IDLookupAgent]] = CPDict()
+        self._agents: Dict[str, Tuple[str, str, float, IDLookupAgent]] = \
+            CPDict()
         self.sources: Set[str] = set()
         self.targets: Set[str] = set()
         #: agents where src==tgt, used to verify id_value read from doc
