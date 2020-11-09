@@ -15,17 +15,63 @@ class ChemResolver(Resolver):
         super().__init__(*args, **kwargs)
 
         # FIXME: add these agents properly
+        # {
+        #   (PREFIX, field):
+        #       PREFIX: {'f': field, 'cf': cost_fwd, 'cb': cost_backward} }
+        # }
+        DEFAULT_COST_FORWARD = 1.0
+        DEFAULT_COST_BACKWARD = 1.5
+        mychem_fields = {
+            ('CHEBI', 'chebi.id'): {
+                'INCHI': {'f': 'chebi.inchi'},
+                'INCHIKEY': {'f': 'chebi.inchikey'},
+                'DRUGBANK': {'f': 'chebi.xrefs.drugbank'},
+                'HMDB': {'f': 'chebi.xrefs.hmdb'},
+                # 'KEGG': {'f': 'chebi.xrefs.kegg_compound'},  # cmpnd or drug?
+                'PUBCHEM.COMPOUND': {'f': 'chebi.xrefs.pubchem.cid'},
+            },
+            ('CHEMBL.COMPOUND', 'chembl.molecule_chembl_id'): {
+                'INCHI': {'f': 'chembl.inchi', 'cb': 1.2},
+                'INCHIKEY': {'f': 'chembl.inchi_key'},
 
-        self.agents.add('DRUGBANK', 'PUBCHEM.COMPOUND',
-                        BioThingsAPIAgent('chem', ['drugbank.id'], ['pubchem.cid']))
-        self.agents.add('PHARMGKB.DRUG', 'DRUGBANK',
-                      BioThingsAPIAgent('chem', ['pharmgkb.id'], ['pharmgkb.xrefs.drugbank']))
-        self.agents.add('inchi', 'PUBCHEM.COMPOUND',
-                        BioThingsAPIAgent('chem', ['pubchem.inchi'], ['pubchem.cid']), cost=1.0)
-        self.agents.add('inchi', 'drugbank', BioThingsAPIAgent('chem', ['drugbank.inchi'], ['drugbank.id']),
-                      cost=1.1)
-        self.agents.add('inchi', 'CHEMBL.COMPOUND', BioThingsAPIAgent('chem', 'chembl.inchi', 'chembl.molecule_chembl_id'),
-                      cost=1.2)
+            },
+            ('DRUGBANK', 'drugbank.id'): {
+                'INCHI': {'f': 'drugbank.inchi', 'cb': 1.1},
+                'INCHIKEY': {'f': 'drugbank.inchi_key'},
+                'CHEBI': {'f': 'drugbank.xrefs.chebi'},
+                'CHEMBL.COMPOUND': {'f': 'drugbank.xrefs.chembl'},
+                # 'KEGG': {'f': 'drugbank.xrefs.kegg.cid'},  # ditto
+                'PHARMGKB.DRUG': {'f': 'drugbank.xrefs.pharmgkb'},
+                'PUBCHEM.COMPOUND': {'f': 'drugbank.xrefs.pubchem.cid'}
+            },
+            ('PHARMGKB.DRUG', 'pharmgkb.id'): {
+                'INCHI': {'f': 'pharmgkb.inchi'},
+                'CHEBI': {'f': 'pharmgkb.xrefs.chebi'},
+                'DRUGBANK': {'f': 'pharmgkb.xrefs.drugbank'},
+                'HMDB': {'f': 'pharmgkb.xrefs.hmdb'},
+                # 'KEGG': {'f': 'pharmgkb.xrefs.kegg_compound'},
+                'MESH': {'f': 'pharmgkb.xrefs.mesh'},
+                'PUBCHEM.COMPOUND': {'f': 'pharmgkb.xrefs.pubchem.cid'},
+            },
+            ('PUBCHEM.COMPOUND', 'pubchem.cid'): {
+                'INCHI': {'f': 'pubchem.inchi'},
+                'INCHIKEY': {'f': 'pubchem.inchi_key', 'cb': 1.0}
+            },
+            ('UNII', 'unii.unii'): {
+                'INCHIKEY': {'f': 'unii.inchikey'},
+            },
+        }
+        for (src_t, src_f), tgt_dict in mychem_fields.items():
+            for tgt_t, info in tgt_dict.items():
+                tgt_f = info['f']
+                cost_forward = info.get('cf', DEFAULT_COST_FORWARD)
+                cost_backward = info.get('cb', DEFAULT_COST_BACKWARD)
+                self.agents.add(
+                    src_t, tgt_t, _bt_chem(src_f, tgt_f), cost_forward
+                )
+                self.agents.add(
+                    tgt_t, src_t, _bt_chem(tgt_f, src_f), cost_backward
+                )
 
         inchi_fields = [
             'pubchem.inchi',
@@ -40,58 +86,10 @@ class ChemResolver(Resolver):
 
         # inchi to inchikey (direct route)
         self.agents.add('inchi', 'inchikey', BioThingsAPIAgent('chem', inchi_fields, inchikey_fields), cost=0.5)
-        # indirect route
-        self.agents.add('PUBCHEM.COMPOUND', 'inchikey', BioThingsAPIAgent('chem', 'pubchem.cid', inchikey_fields))
-        self.agents.add('drugbank', 'inchikey', BioThingsAPIAgent('chem', 'drugbank.id', inchikey_fields))
-        self.agents.add('CHEMBL.COMPOUND', 'inchikey', BioThingsAPIAgent('chem', 'chembl.molecule_chembl_id', inchikey_fields))
-
-        # these agents have not been verified
-        self.agents.add(
-            'unii', 'inchikey',
-            BioThingsAPIAgent('chem', 'unii.unii', 'unii.inchikey'),
-            cost=1000.0
-        )
-        self.agents.add(
-            'inchikey', 'unii',
-            BioThingsAPIAgent('chem', 'unii.inchikey', 'unii.unii'),
-            cost=1000.0
-        )
-        self.agents.add(
-            'PHARMGKB.DRUG', 'PUBCHEM.COMPOUND',
-            BioThingsAPIAgent('chem', 'pharmgkb.id',
-                              'pharmgkb.xrefs.pubchem.cid'),
-            cost=1000.0
-        )
-        self.agents.add(
-            'PUBCHEM.COMPOUND', 'PHARMGKB.DRUG',
-            BioThingsAPIAgent('chem', 'pharmgkb.xrefs.pubchem.cid',
-                              'pharmgkb.id'),
-            cost=1000.0
-        )
-        self.agents.add(
-            'inchikey', 'drugbank',
-            BioThingsAPIAgent('chem', 'drugbank.inchi_key', 'drugbank.id'),
-            cost=1000.0
-        )
-        self.agents.add(
-            'inchikey', 'chebi',
-            BioThingsAPIAgent('chem', 'chebi.inchikey', 'chebi.id'),
-            cost=1000.0
-        )
-        self.agents.add(
-            'inchikey', 'inchi',
-            BioThingsAPIAgent('chem', inchikey_fields, inchi_fields),
-            cost=2000.0
-        )
-        self.agents.add(
-            'CHEBI', 'INCHIKEY',
-            BioThingsAPIAgent('chem', 'chebi.id', 'chebi.inchikey'),
-            cost=1000.0
-        )
 
         # we supply a default preference list
         self.preferred = ['INCHIKEY', 'UNII', 'DRUGBANK', 'CHEBI',
-                          'CHEMBL.COMPOUND', 'PUBCHEM.COMPOUND', 'drugname']
+                          'CHEMBL.COMPOUND', 'PUBCHEM.COMPOUND']
 
         self.agents.frozen = True
 
