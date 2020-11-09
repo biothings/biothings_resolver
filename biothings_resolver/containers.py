@@ -111,6 +111,7 @@ class AgentsContainer:
     def __init__(self, cache_size: int = 128):
         self._agents: Dict[str, Tuple[str, str, float, IDLookupAgent]] = \
             CanonDict()
+        self._agents.case_sensitive = False
         self.sources: Set[str] = set()
         self.targets: Set[str] = set()
         #: agents where src==tgt, used to verify id_value read from doc
