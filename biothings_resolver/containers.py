@@ -1,13 +1,11 @@
-import copy
 import collections.abc
 import warnings
 
-from typing import Any, Dict, Iterator, Optional, List, Tuple, Set, Iterable, \
+from typing import Dict, Iterator, Optional, List, Tuple, Set, Iterable, \
     Generator
 from collections import OrderedDict
 
 from .agents import IDLookupAgent
-from .biolink_model import prefixes as biolink_prefixes
 from .curie import validate_prefix
 
 
@@ -95,133 +93,24 @@ class CanonDict(collections.abc.MutableMapping):
     def __iter__(self) -> Iterator:
         return iter(self._dict)
 
-
-class BiolinkModelPrefixes(collections.abc.Mapping):
-    # TODO: merge this and CPDict, these two are pretty similar
-    def __init__(self, case_insensitive: bool = True):
-        self._canonical_prefixes = copy.deepcopy(biolink_prefixes)
-        self._mapping = {}
-        self._case_insensitive = case_insensitive
-        self._setup()
-
-    def _setup(self):
-        canon_maps = [
-            ('FB', 'FlyBase'),
-            ('WB', 'WormBase'),
-            ('DBSNP', 'dbSNP'),
-        ]
-        for alt_form, canon in canon_maps:
-            try:
-                self._canonical_prefixes.pop(alt_form)
-                if self._case_insensitive:
-                    self._mapping[alt_form.lower()] = canon
-                else:
-                    self._mapping[alt_form] = canon
-            except KeyError:
-                pass
-            except (AttributeError, TypeError):  # no lower or can't call
-                self._mapping[alt_form] = canon
-
-        if self._case_insensitive:
-            for prefix in self._canonical_prefixes:
-                try:
-                    self._mapping[prefix.lower()] = prefix
-                except (AttributeError, TypeError):
-                    pass
-
-    def get_canonical_key(self, k):
-        if k in self._canonical_prefixes:
-            return k
-        if k in self._mapping:
-            return self._mapping[k]
-        raise KeyError(k)
-
-    def __getitem__(self, k):
-        if k in self._canonical_prefixes:
-            return self._canonical_prefixes[k]
-        if k in self._mapping:
-            return self._canonical_prefixes[self._mapping[k]]
-        if self._case_insensitive:
-            return self._canonical_prefixes[
-                self._mapping[k.lower()]
-            ]
-        else:
-            raise KeyError(k)
-
-    def __len__(self) -> int:
-        return len(self._canonical_prefixes)
-
-    def __iter__(self):
-        return iter(self._canonical_prefixes)
-
-
-class CPDict(collections.abc.MutableMapping):
-    """Case Preserving Dictionary"""
-    def __init__(self, *args, **kwargs):
-        self._cf_map: Dict[str, str] = {}
-        self._canonical_dict: Dict[str, Any] = dict(*args, **kwargs)
-        for key in self._canonical_dict:
-            if not self.validate_key(key):
-                raise ValueError(f"Invalid Key ({key})")
-            self._cf_map[self.fold_key_case(key)] = key
-
-    def __setitem__(self, k, v):
-        if not self.validate_key(k):
-            raise ValueError(f"Invalid Key ({k})")
-        cf_key = self.fold_key_case(k)
-        if cf_key in self._cf_map:
-            canon_key = self._cf_map[cf_key]
-            self._canonical_dict[canon_key] = v
-        else:
-            self._cf_map[cf_key] = k
-            self._canonical_dict[k] = v
-
-    def __delitem__(self, k):
-        if not self.validate_key(k):
-            raise KeyError(f"Invalid Key ({k})")
-        canon_key = self._cf_map.pop(self.fold_key_case(k))
-        del self._canonical_dict[canon_key]
-
-    def __getitem__(self, k):
-        if not self.validate_key(k):
-            raise KeyError(f"Invalid Key ({k})")
-        cf_key = self.fold_key_case(k)
-        return self._canonical_dict[self._cf_map[cf_key]]
-
-    def __len__(self) -> int:
-        return len(self._canonical_dict)
-
-    def __iter__(self) -> Iterator:
-        return iter(self._canonical_dict)
-
-    def get_canonical_key(self, key: str) -> str:
-        return self._cf_map[self.fold_key_case(key)]
-
-    @staticmethod
-    def validate_key(key: Any) -> bool:
-        if not isinstance(key, str):
-            return False
-        try:
-            key.encode('ascii')  # only works for 7-bit ascii
-            return True
-        except UnicodeEncodeError:
-            return False
-
-    @staticmethod
-    def fold_key_case(key: str) -> str:
-        return key.lower()
-
     def __repr__(self):
-        return f"CPDict: {repr(self._canonical_dict)}"
+        return f"CanonDict: {repr(self._dict)}"
 
     def __str__(self):
-        return f"CPDict: {str(self._canonical_dict)}"
+        return f"CanonDict: {str(self._dict)}"
+
+
+class CPDict(CanonDict):
+    """Case Preserving Dictionary"""
+    def __init__(self, *args, **kwargs):
+        super(CPDict, self).__init__(*args, **kwargs)
+        self.case_sensitive = False
 
 
 class AgentsContainer:
     def __init__(self, cache_size: int = 128):
         self._agents: Dict[str, Tuple[str, str, float, IDLookupAgent]] = \
-            CPDict()
+            CanonDict()
         self.sources: Set[str] = set()
         self.targets: Set[str] = set()
         #: agents where src==tgt, used to verify id_value read from doc
@@ -231,14 +120,9 @@ class AgentsContainer:
         self.graph: Dict[str, Dict[str, List[str]]] = {}
         self.all_paths: Dict[Tuple[str, str],
                              Dict[Tuple[str, ...], float]] = {}
-        self.prefixes = CPDict()
-        for prefix in biolink_prefixes:
-            if prefix == 'DBSNP':
-                # TODO: Workaround for entries w/ diff. cases in biolink-model
-                #  Fix biolink-model or resolve this!!!
-                #  For whatever reason we have both DBSNP and dbSNP
-                continue
-            self.add_prefix(prefix)
+        from .biolink_model import parse_classes_prefixes, canonical_prefixes
+        _, rp = parse_classes_prefixes()
+        self.prefixes = canonical_prefixes(rp)
 
     def add_prefix(self, prefix: str):
         if prefix in self.prefixes:
@@ -252,20 +136,14 @@ class AgentsContainer:
             cost: float = 1.0, name: Optional[str] = None) -> str:
         if self._frozen:
             raise RuntimeError(self.warn_frozen_msg)
-        canon_src = self.prefixes.get(source)
-        if canon_src:
-            source = canon_src
-        else:
-            warnings.warn(f"{source} is not a recognized prefix", Warning)
-            # add to prefixes anyways after the warning, also shuts up
-            # future warnings
-            self.add_prefix(source)
-        canon_tgt = self.prefixes.get(target)
-        if canon_tgt:
-            target = canon_tgt
-        else:
-            warnings.warn(f"{target} is not a recognized prefix", Warning)
-            self.add_prefix(target)
+        for new_prefix in [source, target]:
+            if new_prefix not in self.prefixes:
+                warnings.warn(f"{source} is not a recognized prefix", Warning)
+                # add to prefixes anyways after the warning, also shuts up
+                # future warnings
+                self.add_prefix(source)
+        source = self.prefixes.get_canon_key(source)
+        target = self.prefixes.get_canon_key(target)
         if name is None:
             name_base = f'{source}-{target}'
             if name_base not in self._agents:
@@ -357,6 +235,9 @@ class AgentsContainer:
         for src in self.graph:
             for path, dst, cost in self._generate_all_paths(src, [], 0.):
                 self.all_paths.setdefault((src, dst), {})[path] = cost
+        for k, paths in self.all_paths.items():
+            self.all_paths[k] = {k: paths[k]
+                                 for k in sorted(paths, key=paths.get)}
 
     def shortest_path_v2(self, src: str, dst: str,
                          not_start_with: Iterable[Iterable[str]]) -> \

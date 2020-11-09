@@ -157,7 +157,7 @@ class Resolver:
             for id_t, id_v in id_struct.items():
                 # FIXME: MOVE to an appropriate place
                 # canonicalize id type
-                id_t = self.agents.prefixes.get(id_t)
+                id_t = self.agents.prefixes.get_canon_key(id_t)
                 if not id_t:
                     continue
                 # convert each id to list of str

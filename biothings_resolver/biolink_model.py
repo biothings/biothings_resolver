@@ -1,6 +1,8 @@
 import os
 import yaml
 
+from .containers import CanonDict
+
 
 def get_classes_prefixes():
     path = os.path.abspath(os.path.dirname(__file__))
@@ -21,4 +23,21 @@ def parse_classes_prefixes():
     return classes, prefixes
 
 
-classes, prefixes = parse_classes_prefixes()
+def canonical_prefixes(raw_prefixes: dict):
+    canon_maps = {
+        'FB': 'FlyBase',
+        'WB': 'WormBase',
+    }
+    remove_prefixes = [
+        'DBSNP'
+    ]
+    d = CanonDict()
+    d.case_sensitive = True  # will allow checking later when toggling this
+    for k, v in raw_prefixes.items():
+        if k in canon_maps or k in remove_prefixes:
+            continue
+        d[k] = v
+    for k, v in canon_maps.items():
+        d.add_alias(k, v)
+    d.case_sensitive = False
+    return d
