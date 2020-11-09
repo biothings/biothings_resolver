@@ -132,3 +132,15 @@ resolver.agents.frozen = True
 ```
 
 #### 3. Use
+
+
+## Installation
+
+To install, clone the project and install it. It will be released as a package
+in the future.
+
+```shell script
+git clone https://github.com/biothings/biothings_resolver.git
+cd biothings_resolver
+python setup.py install
+```
