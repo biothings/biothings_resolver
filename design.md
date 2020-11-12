@@ -30,6 +30,9 @@ Type:`bool`. Whether any resolving functions will attempt to return all the pref
 
 Type:`int`.  The maximum number of items that a resolving agent will be asked to handle at once. An agent may be asked to process less number of items than `batch_size` at one time, but will never be asked to process more items.
 
+##### `max_path`
+Type:`int`. Maximum number of agents to go through during resolve.
+
 #### Transform Attributes
 
 Values may go through additional transformations before and/or after being processed by agents. The following attributes control this transform
