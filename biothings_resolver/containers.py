@@ -124,6 +124,7 @@ class AgentsContainer:
         from .biolink_model import parse_classes_prefixes, canonical_prefixes
         _, rp = parse_classes_prefixes()
         self.prefixes = canonical_prefixes(rp)
+        self.max_path = 3
 
     def add_prefix(self, prefix: str):
         if prefix in self.prefixes:
@@ -203,7 +204,10 @@ class AgentsContainer:
         #  with different agents/edges) in path should fix it,
         #  at least for the foreseeable future
         if path:  # non empty path
-            yield tuple(path), current_node, cost
+            if len(path) <= self.max_path:
+                yield tuple(path), current_node, cost
+            else:
+                return None
         # if no more paths from here, leave
         if current_node not in self.graph:
             return None
