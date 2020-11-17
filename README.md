@@ -2,6 +2,15 @@
 
 Library to lookup BioThings API identifiers.
 
+## Installation
+
+To install, clone the project and install it, or run the following command.
+It will be released as a package in the future when it is more mature.
+
+```shell script
+pip install git+https://github.com/biothings/biothings_resolver.git
+```
+
 ## Example Usage
 
 ### Using Predefined Resolvers
@@ -149,13 +158,3 @@ resolver.agents.frozen = True
 ```
 
 #### 3. Use
-
-
-## Installation
-
-To install, clone the project and install it, or run the following command.
-It will be released as a package in the future when it is more mature.
-
-```shell script
-pip install git+https://github.com/biothings/biothings_resolver.git
-```
