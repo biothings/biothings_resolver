@@ -102,6 +102,23 @@ def load_data():
         yield doc
 ```
 
+#### Change Pathfinding Options
+
+Pathfinding behavior can be configured by altering attributes of the `Resolver`
+instance. Currently the following can be modified.
+
+##### Maximum path length
+
+The maximum number of agents that `Resolver` will use in one run. It can be set
+by changing the `max_path_length` attribute. Default is 3.
+
+```python
+import biothings_resolver
+
+resolver = biothings_resolver.predefined_resolvers.ChemResolver()
+resolver.max_path_length = 5
+```
+
 ### Using customized `Resolver` instance
 
 #### 1. Initialize an empty `Resolver`

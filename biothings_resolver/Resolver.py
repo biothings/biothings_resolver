@@ -78,6 +78,16 @@ class Resolver:
             for input_type, input_field in input_types:
                 self.add_input_field(input_type, input_field)
 
+    @property
+    def max_path_length(self) -> int:
+        return self.agents.max_path
+
+    @max_path_length.setter
+    def max_path_length(self, length: int) -> None:
+        self.agents.frozen = False
+        self.agents.max_path = length
+        self.agents.frozen = True
+
     def add_input_field(self, id_type: str, field: Union[str, Callable[[dict], str]]):
         """Register an input field
 
