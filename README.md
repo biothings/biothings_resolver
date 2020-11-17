@@ -25,12 +25,13 @@ Currently, the following are implemented:
 
 Check by running:
 ```python
-import biothings_resolver
-resolver = biothings_resolver.predefined_resolvers.GeneResolver()
-
-print("Inputs:", ", ".join(resolver.agents.sources))
-print("Outputs:", ", ".join(resolver.agents.targets))
-
+In [1]: import biothings_resolver 
+   ...: resolver = biothings_resolver.predefined_resolvers.GeneResolver() 
+   ...:  
+   ...: print("Inputs:", ", ".join(resolver.agents.sources)) 
+   ...: print("Outputs:", ", ".join(resolver.agents.targets))                   
+Inputs: WormBase, ZFIN, FlyBase, NCBIGene, HGNC, MGI, ENSEMBL, UniProtKB, RGD
+Outputs: WormBase, ZFIN, FlyBase, NCBIGene, HGNC, MGI, ENSEMBL, UniProtKB, RGD
 ```
 
 #### Resolve identifiers
@@ -42,23 +43,32 @@ It can either return the most preferred available identifier type, or expand to
 have all available preferred types, as defined in `Resolver.preferred`. 
 
 ```python
-import biothings_resolver
+In [1]: import biothings_resolver 
+   ...:  
+   ...: resolver = biothings_resolver.predefined_resolvers.ChemResolver() 
+   ...: resolve_input = [{ 
+   ...:     'INCHI': 'InChI=1S/C8H10N4O2/c1-10-4-9-6-5(10)7(13)12(3)8(14)11(6)2/h4H,1-3H3', 
+   ...:     'DRUGBANK': 'DB00201', 
+   ...: }]                                                                      
 
-resolver = biothings_resolver.predefined_resolvers.ChemResolver()
-resolve_input = [{
-    'INCHI': 'InChI=1S/C8H10N4O2/c1-10-4-9-6-5(10)7(13)12(3)8(14)11(6)2/h4H,1-3H3',
-    'DRUGBANK': 'DB00201',
-}]
+In [2]: # don't expand 
+   ...: output = list(resolver.resolve_identifier(resolve_input, expand=False)) 
+   ...: for k, identifiers in output[0].items(): 
+   ...:     print(f"{k}:", ", ".join(identifiers)) 
+   ...:                                                                         
+INCHIKEY: RYYVLZVUVIJVGH-UHFFFAOYSA-N
 
-# don't expand
-output = list(resolver.resolve_identifier(resolve_input, expand=False))
-for k, identifiers in output[0].items():
-    print(f"{k}:", ", ".join(identifiers))
-
-# or expand
-output = list(resolver.resolve_identifier(resolve_input, expand=True))
-for k, identifiers in output[0].items():
-    print(f"{k}:", ", ".join(identifiers))
+In [3]: # or expand 
+   ...: output = list(resolver.resolve_identifier(resolve_input, expand=True)) 
+   ...: for k, identifiers in output[0].items(): 
+   ...:     print(f"{k}:", ", ".join(identifiers)) 
+   ...:                                                                         
+INCHIKEY: RYYVLZVUVIJVGH-UHFFFAOYSA-N
+UNII: 3G6A5W338E
+DRUGBANK: DB00201
+CHEBI: CHEBI:27732
+CHEMBL.COMPOUND: CHEMBL113
+PUBCHEM.COMPOUND: 2519
 ```
 
 #### Resolve CURIE style input, expanding to obtain all available fields
@@ -69,19 +79,40 @@ previous method can support multiple inputs for a single query, providing the
 resolver with more information.
 
 ```python
-import biothings_resolver
+In [1]: import biothings_resolver 
+   ...:  
+   ...: resolver = biothings_resolver.predefined_resolvers.ChemResolver() 
+   ...: resolve_input = [ 
+   ...:     "InChIKey:GKKDCARASOJPNG-UHFFFAOYSA-N", 
+   ...:     "[inchikey:DVARTQFDIMZBAA-UHFFFAOYSA-O]",  # safe_curie, not required 
+   ...:     "CHEBI:32146", 
+   ...: ] 
+   ...: for orig, new in zip(resolve_input, resolver.resolve_curie(resolve_input, expand=True)): 
+   ...:     print("Original:", orig) 
+   ...:     for new_id in new: 
+   ...:         print(new_id) 
+   ...:     print() 
+   ...:                                                                                                                                   
+Original: InChIKey:GKKDCARASOJPNG-UHFFFAOYSA-N
+INCHIKEY:GKKDCARASOJPNG-UHFFFAOYSA-N
+CHEBI:81931
+CHEMBL.COMPOUND:CHEMBL2251334
+PUBCHEM.COMPOUND:61021
 
-resolver = biothings_resolver.predefined_resolvers.ChemResolver()
-resolve_input = [
-    "InChIKey:GKKDCARASOJPNG-UHFFFAOYSA-N",
-    "[inchikey:DVARTQFDIMZBAA-UHFFFAOYSA-O]",  # safe_curie, not required
-    "CHEBI:32146",
-]
-for orig, new in zip(resolve_input, resolver.resolve_curie(resolve_input, expand=True)):
-    print("Original:", orig)
-    for new_id in new:
-        print(new_id)
-    print()
+Original: [inchikey:DVARTQFDIMZBAA-UHFFFAOYSA-O]
+INCHIKEY:DVARTQFDIMZBAA-UHFFFAOYSA-O
+UNII:T8YA51M7Y6
+CHEBI:63038
+CHEMBL.COMPOUND:CHEMBL1500032
+PUBCHEM.COMPOUND:22985
+
+Original: CHEBI:32146
+INCHIKEY:SUKJFIGYRHOWBL-UHFFFAOYSA-N
+UNII:DY38VHM5OD
+DRUGBANK:DBSALT001517
+CHEBI:32146
+CHEMBL.COMPOUND:CHEMBL1334078
+PUBCHEM.COMPOUND:23665760
 ```
 
 #### Use as a decorator
