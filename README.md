@@ -29,7 +29,7 @@ import biothings_resolver
 resolver = biothings_resolver.predefined_resolvers.GeneResolver()
 
 print("Inputs:", ", ".join(resolver.agents.sources))
-print("Outputs:", ", ".join(resolver.agents.sources))
+print("Outputs:", ", ".join(resolver.agents.targets))
 
 ```
 
