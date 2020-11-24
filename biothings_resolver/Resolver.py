@@ -80,6 +80,8 @@ class Resolver:
             for input_type, input_field in input_types:
                 self.add_input_field(input_type, input_field)
 
+        self.decorators = Decorators(self)
+
     @property
     def max_path_length(self) -> int:
         return self.agents.max_path
@@ -184,8 +186,9 @@ class Resolver:
         an output, the output will be an empty dictionary.
 
         Only the resolution results will be in the output (as configured in
-        :py:attribute:`preferred` and :py:attribute:`expand`). To copy other fields from
-        the input, use the :py:method:`resolve_document` method below.
+        :py:attribute:`preferred` and :py:attribute:`expand`). To copy other
+        fields from the input, use the :py:method:`resolve_document` method
+        below.
 
 
         :param in_values: Input values
@@ -460,3 +463,45 @@ class Resolver:
             else:  # did not break from loop == no new id
                 self.logger.debug("did not update %s", o_idv)
                 yield od  # no need to copy
+
+
+class Decorators:
+    def __init__(self, parent):
+        super(Decorators, self).__init__()
+        self.parent = parent
+
+    def resolve(self, func):
+        func_name = 'resolve'
+        if not hasattr(self.parent, func_name):
+            raise AttributeError(f"Parent does not have {func_name}")
+
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            input_docs = func(*args, **kwargs)
+            yield from self.parent.resolve(input_docs)
+
+        return wrapped
+
+    def resolve_curie(self, func):
+        func_name = 'resolve_curie'
+        if not hasattr(self.parent, func_name):
+            raise AttributeError(f"Parent does not have {func_name}")
+
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            input_docs = func(*args, **kwargs)
+            yield from self.parent.resolve_curie(input_docs)
+
+        return wrapped
+
+    def resolve_document(self, func, *a, **kwa):
+        func_name = 'resolve_document'
+        if not hasattr(self.parent, func_name):
+            raise AttributeError(f"Parent does not have {func_name}")
+
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            input_docs = func(*args, **kwargs)
+            yield from self.parent.resolve_document(input_docs, *a, **kwa)
+
+        return wrapped
