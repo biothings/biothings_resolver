@@ -34,9 +34,9 @@ import itertools
 import logging
 from functools import wraps
 from typing import List, Dict, Optional, Tuple, Union, Callable, Iterable, \
-    Generator, Sequence, Mapping, Set, MutableMapping, Any
+    Generator, Sequence, Mapping, Set, MutableMapping, Any, Collection
 
-from .containers import AgentsContainer, CPDict
+from .containers import AgentsContainer, CPDict, CanonDict
 from .utils import dict_get_nested, transform_str
 from .curie import split_curie
 
@@ -68,6 +68,9 @@ class Resolver:
             MutableMapping[str, Callable[[str], Optional[str]]] = CPDict()
         self.curie_out_xfrm: \
             MutableMapping[str, Callable[[str], Optional[str]]] = CPDict()
+
+        self.in_xtrm: MutableMapping[str, Callable] = CanonDict()
+        self.out_xfrm: MutableMapping[str, Callable] = CanonDict()
 
         # (id_t, id_v): List[(prev. id_t, id_v, agt)]
         self.resolver_trace: Dict[Tuple[str, str], Set[tuple]] = {}
@@ -136,7 +139,7 @@ class Resolver:
         else:
             raise ValueError(f"Invalid direction: {direction}")
 
-    def resolve(self, in_values: Sequence[Dict[str, Any]]) -> \
+    def resolve(self, in_values: Collection[Dict[str, Any]]) -> \
             Generator[Dict[str, list], None, None]:
         """
         Resolve values
