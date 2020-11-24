@@ -136,31 +136,6 @@ class Resolver:
         else:
             raise ValueError(f"Invalid direction: {direction}")
 
-    def __call__(self, func):
-        """Decorates a data_loading function
-
-        Args:
-            func: function to be decorated
-
-        Returns:
-            New function that has an updated `_id` field
-        """
-        self.logger.debug("decorating function %s", func)
-
-        @wraps(func)
-        def wrapped_f(*args, **kwargs):
-            input_docs = func(*args, **kwargs)
-            while True:
-                chunk_docs = list(itertools.islice(input_docs, self.batch_size))
-                num_docs = len(chunk_docs)
-                if num_docs == 0:
-                    self.logger.debug("no more documents, returning.")
-                    break
-                self.logger.debug("got %d documents input in this batch", num_docs)
-                yield from self.resolve_document(chunk_docs)
-            return None
-        return wrapped_f
-
     def resolve(self, in_values: Sequence[Dict[str, Any]]) -> \
             Generator[Dict[str, list], None, None]:
         """
