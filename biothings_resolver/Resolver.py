@@ -34,7 +34,7 @@ import itertools
 import logging
 from functools import wraps
 from typing import List, Dict, Optional, Tuple, Union, Callable, Iterable, \
-    Generator, Sequence, Mapping, Set, MutableMapping
+    Generator, Sequence, Mapping, Set, MutableMapping, Any
 
 from .containers import AgentsContainer, CPDict
 from .utils import dict_get_nested, transform_str
@@ -73,6 +73,8 @@ class Resolver:
         self.resolver_trace: Dict[Tuple[str, str], Set[tuple]] = {}
 
         self.document_resolve_id_field = '_id'
+
+        self.expand = False
 
         if input_types:
             for input_type, input_field in input_types:
@@ -157,8 +159,48 @@ class Resolver:
             return None
         return wrapped_f
 
-    def resolve_identifier(self, ids: Sequence[Mapping[str, str]],
-                           expand: bool) -> \
+    def resolve(self, in_values: Sequence[Dict[str, Any]]) -> \
+            Generator[Dict[str, list], None, None]:
+        """
+        Resolve values
+
+        Takes in an ordered collection (for instance, a `list`) of
+        dictionaries. Each dictionary represents a group of inputs, combined
+        together in a similar fashion to a logical OR operation, which means
+        an input of any type in the group will be used for resolving to the
+        desired output types. The keys of the input dictionary is a
+        CURIE-prefix for the corresponding type.
+
+        The output is in the same order as the input. The dictionary will have
+        keys specified in `Resolver.preferred`, instead of the canonical
+        version. For instance, if "fb" is an alias to the canonical prefix
+        "FLYBASE", and "fb" is specified in the :py:attribute:`preferred`
+        attribute,
+        then the output dictionary will use "fb" as its key when an output
+        value is of type "FLYBASE". If any results are produced for a type of
+        output value, it will be stored in the `list`, which has at least one
+        element (i.e., no key if no result, singular results will not be taken
+        out of `list` container). If a group of input values does not produce
+        an output, the output will be an empty dictionary.
+
+        Only the resolution results will be in the output (as configured in
+        :py:attribute:`preferred` and :py:attribute:`expand`). To copy other fields from
+        the input, use the :py:method:`resolve_document` method below.
+
+
+        :param in_values: Input values
+        :return:
+        """
+        while True:
+            chunk_input = list(itertools.islice(in_values, self.batch_size))
+            num_docs = len(chunk_input)
+            if num_docs == 0:
+                break
+            # canonicalize not needed here, the method below handles that
+            yield from self.resolve_identifier(chunk_input)
+        return None
+
+    def resolve_identifier(self, ids: Sequence[Mapping[str, str]]) -> \
             Generator[Dict[str, List[str]], None, None]:
         input_ids: List[Dict[str, List[str]]] = []
         # convert input
@@ -178,7 +220,7 @@ class Resolver:
             input_ids.append(d)
         while True:
             # build lookup path for each id
-            resolve_q = self._build_resolve_queue(input_ids, expand)
+            resolve_q = self._build_resolve_queue(input_ids)
             if len(resolve_q) == 0:
                 break  # exit loop when nothing to do
             agent_resolve_id_info = {}  # what id should each agent lookup
@@ -251,8 +293,9 @@ class Resolver:
             for id_t in self.preferred:
                 if id_t in id_struct:
                     # FIXME: same as above
-                    od[id_t] = list(set(id_struct[id_t]))
-                    if expand:
+                    id_t_canon = self.agents.prefixes.get_canon_key(id_t)
+                    od[id_t] = list(set(id_struct[id_t_canon]))
+                    if self.expand:
                         continue
                     else:
                         break
@@ -300,7 +343,7 @@ class Resolver:
             raise RuntimeError("Loop in dependency graph for agents")
         return tasks_order
 
-    def _build_resolve_queue(self, input_ids, resolve_all):
+    def _build_resolve_queue(self, input_ids):
         resolve_queue = {}  # path: starting point tuple
         for id_idx, id_struct in enumerate(input_ids):
             # anything we already have has initial cost of 0
@@ -308,7 +351,7 @@ class Resolver:
             # we store/retrieve failed agents per "starting point"
             for target in self.preferred:
                 if target in id_struct:
-                    if resolve_all:
+                    if self.expand:
                         continue
                     else:
                         break
