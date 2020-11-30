@@ -45,13 +45,51 @@ class Resolver:
     """Base class for looking up IDs
 
     Attributes:
-        preferred: List of output id_types in the order of preference
-        batch_size: Size of documents to process in each batch
+        preferred (List[str]): A list of preferred output types, in the order
+            of preference, like CURIE-prefix style.
+        batch_size (int):  The maximum number of items that a resolving agent
+            will be asked to handle at once. An agent may be asked to process
+            less number of items than `batch_size` at one time, but will never
+            be asked to process more items.
+        expand (bool):  Whether any resolving functions will attempt to return
+            all the preferred output types, or only return the available most
+            preferred output type.
+        in_xfrm (MutableMapping[str, Callable[[str, Any], Any]): Input
+            transformations. This takes place before resolving through resolver
+            agents.
+
+            Keys are CURIE-prefix style or '*', values are functions that take
+            the CURIE-prefix as the first argument, and the value as the second
+            argument. If the return value is not `None` it will be used to
+            update the value, or else the input is discarded.
+
+            When the key '*' exists, it will be applied to all input types,
+            after any other transformations.
+
+            Examples:
+                For instance to remove the 'CID' prefix for PubChem CID inputs,
+                we can have all 'PUBCHEM.COMPOUND' have a transformation that
+                strips the first three characters of the input:
+
+                >>> resolver = Resolver()
+                >>> resolver.in_xfrm['PUBCHEM.COMPOUND'] = lambda t, v: v[3:]
+
+        out_xfrm (MutableMapping[str, Callable[[str, Any], Any]): Output
+            transformations. This takes place after resolving through resolver
+            agents. Key and values are the same specifications as in
+            :py:attr:`in_xfrm`.
+
+            Notes:
+                - To perform multiple transforms, compose a function that
+                  performs multiple transforms.
+                - To apply transformations between resolver agents, customize
+                  the agents.
 
     """
     def __init__(self, input_types=None):
         super(Resolver, self).__init__()
         self.logger = logging.getLogger('biothings_resolver')
+        self.logger.setLevel(logging.CRITICAL)
         self.preferred: List[str] = []
         self.in_fields: Dict[str, Union[str, Callable[[dict], str]]] = {}
         self.agents = AgentsContainer(cache_size=128)
@@ -69,7 +107,7 @@ class Resolver:
         self.curie_out_xfrm: \
             MutableMapping[str, Callable[[str], Optional[str]]] = CPDict()
 
-        self.in_xtrm: MutableMapping[str, Callable] = CanonDict()
+        self.in_xfrm: MutableMapping[str, Callable] = CanonDict()
         self.out_xfrm: MutableMapping[str, Callable] = CanonDict()
 
         # (id_t, id_v): List[(prev. id_t, id_v, agt)]
@@ -85,8 +123,35 @@ class Resolver:
 
         self.decorators = Decorators(self)
 
+        self._debug = False
+
+    @property
+    def debug(self) -> bool:
+        """bool:Debug setting
+
+        Controls whether debugging information will be output using the
+        standard logging utilities. It will be the same as setting up logging
+        manually, this is only a convenience feature.
+
+        Notes:
+            To observe how a single input is resolved, set :py:attr:`debug` to
+            `True` and invoke any resolving functions with a single input.
+
+        """
+        return self._debug
+
+    @debug.setter
+    def debug(self, v: bool):
+        if v:
+            self.logger.setLevel(logging.DEBUG)
+        else:
+            self.logger.setLevel(logging.CRITICAL)
+        self._debug = v
+
     @property
     def max_path_length(self) -> int:
+        """int:Maximum number of agents to go through during resolve.
+        """
         return self.agents.max_path
 
     @max_path_length.setter
@@ -141,8 +206,7 @@ class Resolver:
 
     def resolve(self, in_values: Collection[Dict[str, Any]]) -> \
             Generator[Dict[str, list], None, None]:
-        """
-        Resolve values
+        """Resolve values
 
         Takes in an ordered collection (for instance, a `list`) of
         dictionaries. Each dictionary represents a group of inputs, combined
@@ -154,7 +218,7 @@ class Resolver:
         The output is in the same order as the input. The dictionary will have
         keys specified in `Resolver.preferred`, instead of the canonical
         version. For instance, if "fb" is an alias to the canonical prefix
-        "FLYBASE", and "fb" is specified in the :py:attribute:`preferred`
+        "FLYBASE", and "fb" is specified in the :py:attr:`preferred`
         attribute,
         then the output dictionary will use "fb" as its key when an output
         value is of type "FLYBASE". If any results are produced for a type of
@@ -164,13 +228,17 @@ class Resolver:
         an output, the output will be an empty dictionary.
 
         Only the resolution results will be in the output (as configured in
-        :py:attribute:`preferred` and :py:attribute:`expand`). To copy other
-        fields from the input, use the :py:method:`resolve_document` method
+        :py:attr:`preferred` and :py:attr:`expand`). To copy other
+        fields from the input, use the :py:meth:`resolve_document` method
         below.
 
 
-        :param in_values: Input values
-        :return:
+        Args:
+            in_values: Ordered collection of dicts, where keys are CURIE-prefix
+                style str indicators of value types.
+        Yields:
+            dicts where keys are CURIE-prefix style and values are list of
+                resolved values.
         """
         while True:
             chunk_input = list(itertools.islice(in_values, self.batch_size))
@@ -358,8 +426,26 @@ class Resolver:
                 pass
         return resolve_queue
 
-    def resolve_curie(self, curies: Sequence[str], expand: bool) -> \
+    def resolve_curie(self, curies: Sequence[str]) -> \
             Generator[List[str], None, None]:
+        """Resolve CURIE style input
+
+        Takes in an ordered collection of CURIEs. Each CURIE is an input.
+
+        Produces `list`s of `str`, in the same order as the input. The CURIE
+        prefix in the output will use the version specified in
+        `Resolver.preferred` instead of the canonical version. If an input has
+        multiple output values of the same type, they will all be present in
+        the output `list`. If an input does not produce an output, its
+        corresponding output will be an empty `list`.
+
+        Args:
+            curies: Ordered collection of CURIE style inputs
+
+        Yields:
+            List of CURIE-style results
+        """
+        expand = self.expand
         id_l = []
         for curie in curies:
             prefix, ref = split_curie(curie)
