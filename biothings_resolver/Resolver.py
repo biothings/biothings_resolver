@@ -165,42 +165,12 @@ class Resolver:
         self.agents.frozen = True
 
     def add_input_field(self, id_type: str, field: Union[str, Callable[[dict], str]]):
-        """Register an input field
-
-        Args:
-            id_type: identifier type of this field
-            field: Either a `str`, for dot delimited notation for the key in the document; OR
-                a `Callable` that takes in the entire document and returns a `str`.
-        """
         self.in_fields[id_type] = field
 
     def remove_input_field(self, id_type: str):
-        """Remove a input field"""
         del self.in_fields[id_type]
 
     def add_id_transforms(self, direction: str, id_type: str, normalizer: Callable[[str], Optional[str]]) -> None:
-        """Add id_value transformations on input/output, when transforming documents
-
-        Args:
-            direction: 'input' or 'output'
-            id_type: type of identity to apply transform
-            normalizer: transformation, return None if an id_value is invalid and needs to be removed
-
-        Examples:
-            For instance, if a document has may or may not have InChI ids, and pandas reading the document returns NaN,
-            it is preferred to have them removed because they are invalid input and slows down lookup.
-            >>> lookup = Resolver()
-            >>> lookup.add_id_transforms('input', 'inchi', lambda s: None if s != s else s)
-            An input can also be skipped based on regex matching, see biothings_resolver.transforms.filter_regex
-
-            For instance, if the output of an PubChem identity needs to be prefixed with 'CID'
-            >>> lookup = Resolver()
-            >>> lookup.add_id_transforms('output', 'pubchem', lambda s: f"CID {s}")
-
-            Some common uses are implemented in biothings_resolver.transforms and can be used as examples
-            on implementing new transforms
-        """
-        # TODO: implement transforms that applies to ALL identity types (old behavior)
         if direction == 'input':
             self.id_v_in_xfrm.setdefault(id_type, []).append(normalizer)
         elif direction == 'output':
