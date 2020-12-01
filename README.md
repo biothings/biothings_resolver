@@ -53,7 +53,7 @@ In [1]: import biothings_resolver
 
 In [2]: # don't expand 
    ...: resolver.expand = False
-   ...: output = list(resolver.resolve_identifier(resolve_input)) 
+   ...: output = list(resolver.resolve(resolve_input)) 
    ...: for k, identifiers in output[0].items(): 
    ...:     print(f"{k}:", ", ".join(identifiers)) 
    ...:                                                                         
@@ -61,7 +61,7 @@ INCHIKEY: RYYVLZVUVIJVGH-UHFFFAOYSA-N
 
 In [3]: # or expand 
    ...: resolver.expand = True
-   ...: output = list(resolver.resolve_identifier(resolve_input)) 
+   ...: output = list(resolver.resolve(resolve_input)) 
    ...: for k, identifiers in output[0].items(): 
    ...:     print(f"{k}:", ", ".join(identifiers)) 
    ...:                                                                         

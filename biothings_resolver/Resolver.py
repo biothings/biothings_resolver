@@ -244,8 +244,9 @@ class Resolver:
             dicts where keys are CURIE-prefix style and values are list of
                 resolved values.
         """
+        it = iter(in_values)
         while True:
-            chunk_input = list(itertools.islice(in_values, self.batch_size))
+            chunk_input = list(itertools.islice(it, self.batch_size))
             num_docs = len(chunk_input)
             if num_docs == 0:
                 break
