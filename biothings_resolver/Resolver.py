@@ -125,6 +125,10 @@ class Resolver:
 
         self._debug = False
 
+        self._opt_cnf = {
+            'vt_key': '\x00\x00\x00\x00*origin_vt',  # key for value types
+        }
+
     @property
     def debug(self) -> bool:
         """bool:Debug setting
@@ -253,8 +257,11 @@ class Resolver:
             Generator[Dict[str, List[str]], None, None]:
         input_ids: List[Dict[str, List[str]]] = []
         # convert input
+        vt_key = self._opt_cnf['vt_key']
         for id_struct in ids:
-            d = {}
+            d = {
+                vt_key: []
+            }
             for id_t, id_v in id_struct.items():
                 # FIXME: MOVE to an appropriate place
                 # canonicalize id type
@@ -266,7 +273,7 @@ class Resolver:
                     d[id_t] = [str(x) for x in id_v]
                 else:
                     d[id_t] = [str(id_v)]
-                d.setdefault('\x00\x00\x00\x00*origin_vt', []).append(id_t)
+                d[vt_key].append(id_t)
             input_ids.append(d)
         while True:
             # build lookup path for each id
@@ -406,7 +413,7 @@ class Resolver:
                     else:
                         break
                 possible_paths = {}
-                for id_t in id_struct['\x00\x00\x00\x00*origin_vt']:
+                for id_t in id_struct[self._opt_cnf['vt_key']]:
                     id_vs = id_struct.get(id_t)
                     for idv_idx, idv in enumerate(id_vs):
                         rej_starts = self.id_failed_agents.get((id_t, idv), [])
