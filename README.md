@@ -52,14 +52,16 @@ In [1]: import biothings_resolver
    ...: }]                                                                      
 
 In [2]: # don't expand 
-   ...: output = list(resolver.resolve_identifier(resolve_input, expand=False)) 
+   ...: resolver.expand = False
+   ...: output = list(resolver.resolve_identifier(resolve_input)) 
    ...: for k, identifiers in output[0].items(): 
    ...:     print(f"{k}:", ", ".join(identifiers)) 
    ...:                                                                         
 INCHIKEY: RYYVLZVUVIJVGH-UHFFFAOYSA-N
 
 In [3]: # or expand 
-   ...: output = list(resolver.resolve_identifier(resolve_input, expand=True)) 
+   ...: resolver.expand = True
+   ...: output = list(resolver.resolve_identifier(resolve_input)) 
    ...: for k, identifiers in output[0].items(): 
    ...:     print(f"{k}:", ", ".join(identifiers)) 
    ...:                                                                         
@@ -82,12 +84,13 @@ resolver with more information.
 In [1]: import biothings_resolver 
    ...:  
    ...: resolver = biothings_resolver.predefined_resolvers.ChemResolver() 
+   ...: resolver.expand = True
    ...: resolve_input = [ 
    ...:     "InChIKey:GKKDCARASOJPNG-UHFFFAOYSA-N", 
    ...:     "[inchikey:DVARTQFDIMZBAA-UHFFFAOYSA-O]",  # safe_curie, not required 
    ...:     "CHEBI:32146", 
    ...: ] 
-   ...: for orig, new in zip(resolve_input, resolver.resolve_curie(resolve_input, expand=True)): 
+   ...: for orig, new in zip(resolve_input, resolver.resolve_curie(resolve_input)): 
    ...:     print("Original:", orig) 
    ...:     for new_id in new: 
    ...:         print(new_id) 
