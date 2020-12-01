@@ -511,7 +511,7 @@ class Resolver:
             # end of extracting for all fields in single document
             id_dicts.append(id_dict)
         # end of extracting IDs from documents
-        for od, res in zip(o_docs, self.resolve_identifier(id_dicts, False)):
+        for od, res in zip(o_docs, self.resolve_identifier(id_dicts)):
             o_idv = od.get(self.document_resolve_id_field, None)
             for id_t in self.preferred:
                 if id_t in res:
