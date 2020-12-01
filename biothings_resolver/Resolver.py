@@ -266,6 +266,7 @@ class Resolver:
                     d[id_t] = [str(x) for x in id_v]
                 else:
                     d[id_t] = [str(id_v)]
+                d.setdefault('\x00\x00\x00\x00*origin_vt', []).append(id_t)
             input_ids.append(d)
         while True:
             # build lookup path for each id
@@ -405,7 +406,8 @@ class Resolver:
                     else:
                         break
                 possible_paths = {}
-                for id_t, id_vs in id_struct.items():
+                for id_t in id_struct['\x00\x00\x00\x00*origin_vt']:
+                    id_vs = id_struct.get(id_t)
                     for idv_idx, idv in enumerate(id_vs):
                         rej_starts = self.id_failed_agents.get((id_t, idv), [])
                         path, cost = self.agents.shortest_path_v2(
@@ -445,7 +447,6 @@ class Resolver:
         Yields:
             List of CURIE-style results
         """
-        expand = self.expand
         id_l = []
         for curie in curies:
             prefix, ref = split_curie(curie)
@@ -455,7 +456,7 @@ class Resolver:
             else:
                 id_v = ref
             id_l.append({prefix: id_v})
-        for id_resolved in self.resolve_identifier(id_l, expand):
+        for id_resolved in self.resolve_identifier(id_l):
             output = []
             for prefix, id_values in id_resolved.items():
                 xfrm = self.curie_out_xfrm.get(prefix)
