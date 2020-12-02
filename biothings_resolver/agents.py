@@ -7,6 +7,7 @@ from .utils import dict_get_nested
 
 
 class IDLookupAgent:
+    """Base Agent Class"""
     def __init__(self):
         super(IDLookupAgent, self).__init__()
 

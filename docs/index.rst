@@ -7,7 +7,9 @@ Welcome to BioThings Resolver's documentation!
 ==============================================
 
 .. automodule:: biothings_resolver.Resolver
-    :members:
+   :members:
+.. automodule:: biothings_resolver.agents
+   :members:
 
 .. toctree::
    :maxdepth: 2

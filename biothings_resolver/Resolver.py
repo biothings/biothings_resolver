@@ -10,7 +10,8 @@ queries: when there is not a direct path an identifier of one type is
 first translated to one or more identifiers of intermediate types,
 before finally obtaining the target identifier type.
 
-The `Resolver` class implements the lookup mechanisms. The `Agent` class
+The :py:class:`Resolver` class implements the lookup mechanisms. The
+:py:class:`IDLookupAgent` class
 performs the lookups.
 One part of the core mechanism is implemented in the `Resolver` class,
 which runs through va
@@ -84,6 +85,13 @@ class Resolver:
                   performs multiple transforms.
                 - To apply transformations between resolver agents, customize
                   the agents.
+
+        decorators: Container for decorators. :py:meth:`Decorators.resolve`,
+            :py:meth:`Decorators.resolve_curie`, and
+            :py:meth:`Decorators.resolve_document` exist and wraps a function
+            inside the corresponding :py:meth:`resolve`,
+            :py:meth:`resolve_curie`, and :py:meth:`resolve_document` in this
+            class :py:class:`Resolver`.
 
     """
     def __init__(self, input_types=None):
@@ -434,7 +442,7 @@ class Resolver:
             else:
                 id_v = ref
             id_l.append({prefix: id_v})
-        for id_resolved in self.resolve_identifier(id_l):
+        for id_resolved in self.resolve(id_l):
             output = []
             for prefix, id_values in id_resolved.items():
                 xfrm = self.curie_out_xfrm.get(prefix)
@@ -489,7 +497,7 @@ class Resolver:
             # end of extracting for all fields in single document
             id_dicts.append(id_dict)
         # end of extracting IDs from documents
-        for od, res in zip(o_docs, self.resolve_identifier(id_dicts)):
+        for od, res in zip(o_docs, self.resolve(id_dicts)):
             o_idv = od.get(self.document_resolve_id_field, None)
             for id_t in self.preferred:
                 if id_t in res:
@@ -509,11 +517,16 @@ class Resolver:
 
 
 class Decorators:
+    """Decorators container
+
+    """
     def __init__(self, parent):
         super(Decorators, self).__init__()
         self.parent = parent
 
     def resolve(self, func):
+        """Decorator wrapper for :py:meth:`Resolver.resolve`,
+        """
         func_name = 'resolve'
         if not hasattr(self.parent, func_name):
             raise AttributeError(f"Parent does not have {func_name}")
@@ -526,6 +539,8 @@ class Decorators:
         return wrapped
 
     def resolve_curie(self, func):
+        """Decorator wrapper for :py:meth:`Resolver.resolve_curie`,
+        """
         func_name = 'resolve_curie'
         if not hasattr(self.parent, func_name):
             raise AttributeError(f"Parent does not have {func_name}")
@@ -538,6 +553,8 @@ class Decorators:
         return wrapped
 
     def resolve_document(self, func, *a, **kwa):
+        """Decorator wrapper for :py:meth:`Resolver.resolve_document`,
+        """
         func_name = 'resolve_document'
         if not hasattr(self.parent, func_name):
             raise AttributeError(f"Parent does not have {func_name}")
