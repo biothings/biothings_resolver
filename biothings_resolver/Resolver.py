@@ -38,8 +38,8 @@ from typing import List, Dict, Optional, Tuple, Union, Callable, Iterable, \
     Generator, Sequence, Mapping, Set, MutableMapping, Any, Collection
 
 from .containers import AgentsContainer, CPDict, CanonDict
-from .utils import dict_get_nested, transform_str
 from .curie import split_curie
+from .utils import dict_get_nested
 
 
 class Resolver:
@@ -94,21 +94,15 @@ class Resolver:
             class :py:class:`Resolver`.
 
     """
-    def __init__(self, input_types=None):
+    def __init__(self):
         super(Resolver, self).__init__()
         self.logger = logging.getLogger('biothings_resolver')
         self.logger.setLevel(logging.CRITICAL)
         self.preferred: List[str] = []
-        self.in_fields: Dict[str, Union[str, Callable[[dict], str]]] = {}
         self.agents = AgentsContainer(cache_size=128)
         self.batch_size = 1000
         # now we store failed processors on a per id basis
         self.id_failed_agents = {}
-
-        self.id_v_in_xfrm: \
-            MutableMapping[str, List[Callable[[str], Optional[str]]]] = CPDict()
-        self.id_v_out_xfrm: \
-            MutableMapping[str, List[Callable[[str], Optional[str]]]] = CPDict()
 
         self.curie_in_xfrm: \
             MutableMapping[str, Callable[[str], Optional[str]]] = CPDict()
@@ -124,10 +118,6 @@ class Resolver:
         self.document_resolve_id_field = '_id'
 
         self.expand = False
-
-        if input_types:
-            for input_type, input_field in input_types:
-                self.add_input_field(input_type, input_field)
 
         self.decorators = Decorators(self)
 
@@ -171,20 +161,6 @@ class Resolver:
         self.agents.frozen = False
         self.agents.max_path = length
         self.agents.frozen = True
-
-    def add_input_field(self, id_type: str, field: Union[str, Callable[[dict], str]]):
-        self.in_fields[id_type] = field
-
-    def remove_input_field(self, id_type: str):
-        del self.in_fields[id_type]
-
-    def add_id_transforms(self, direction: str, id_type: str, normalizer: Callable[[str], Optional[str]]) -> None:
-        if direction == 'input':
-            self.id_v_in_xfrm.setdefault(id_type, []).append(normalizer)
-        elif direction == 'output':
-            self.id_v_out_xfrm.setdefault(id_type, []).append(normalizer)
-        else:
-            raise ValueError(f"Invalid direction: {direction}")
 
     def resolve(self, in_values: Collection[Dict[str, Any]]) -> \
             Generator[Dict[str, list], None, None]:
@@ -454,58 +430,56 @@ class Resolver:
                     output.append(f"{prefix}:{id_v}")
             yield output
 
-    def resolve_document(self, documents: Iterable[dict]) -> Generator:
+    def resolve_document(self, documents: Iterable[dict],
+                         in_map: Union[Dict[str, str],
+                                       Callable[[dict], Dict[str, Any]]],
+                         out_map: Union[str, Dict[str, str],
+                                        Callable[[str, Any], Dict]]
+                         ) -> Generator:
         """Resolve identifiers given a document
 
         Args:
             documents: a series of documents
+            in_map:
+            out_map:
 
         Returns:
             List of documents, with duplications when one set of
             identifiers gives more than one output of the desired
             identifier type.
         """
+        # build input processor
+        if callable(in_map):
+            process_input = in_map
+        else:
+            def process_input(doc: dict):
+                in_dict = {}
+                for v_type, field in in_map.items():
+                    v = dict_get_nested(document, field)
+                    if v is None:
+                        v = document.get(field, None)
+                    if v is None:
+                        continue
+                    in_dict[v_type] = v
+                return in_dict
+
         id_dicts = []
         o_docs = []
         for document in documents:
             o_docs.append(copy.deepcopy(document))
-            id_dict = {}  # {id_type: id_values}
-            for id_type, field in self.in_fields.items():
-                if isinstance(field, str):  # obtain value from single field
-                    id_v = dict_get_nested(document, field)
-                elif isinstance(field, Callable):
-                    # obtain value using custom implementation given
-                    id_v = field(document)
-                else:
-                    raise RuntimeError("unrecognized field type")
-                if isinstance(id_v, str):
-                    pass  # do nothing when we have str
-                elif id_v is None:
-                    continue  # skip when None is obtained
-                else:
-                    pass
-                xfrm = self.id_v_in_xfrm.get(id_type, [])
-                id_v = transform_str(id_v, xfrm)
-                if id_v is not None:
-                    if not isinstance(id_v, str):
-                        self.logger.warning(
-                            "got raw %s:(%s)%r and force converting to str...",
-                            id_type, type(id_v).__name__, id_v)
-                        id_v = str(id_v)
-                        self.logger.warning("...converted to %s", id_v)
-                    id_dict[id_type] = id_v
+            id_dict = process_input(document)
             # end of extracting for all fields in single document
             id_dicts.append(id_dict)
         # end of extracting IDs from documents
         for od, res in zip(o_docs, self.resolve(id_dicts)):
             o_idv = od.get(self.document_resolve_id_field, None)
             for id_t in self.preferred:
+                # FIXME: output according to out_map
+                # FIXME: multiple output of same value type
                 if id_t in res:
                     if len(res[id_t]) > 1:
                         self.logger.warning("%s->%s(multi)", o_idv, res[id_t])
                     for id_v in res[id_t]:
-                        xfrm = self.id_v_out_xfrm.get(id_t, [])
-                        id_v = transform_str(id_v, xfrm)
                         new_doc = copy.deepcopy(od)
                         new_doc[self.document_resolve_id_field] = id_v
                         self.logger.debug("updated doc ID %s->%s", o_idv, id_v)
