@@ -137,7 +137,8 @@ resolver = biothings_resolver.predefined_resolvers.ChemResolver([
         ('DRUGBANK', 'pharmgkb.xrefs.drugbank'),
         ('CHEBI', 'pharmgkb.xrefs.chebi'),
 ])
-@resolver
+resolver.expand = True
+@resolver.decorators.resolve
 def load_data():
      # a typical dataloader for PharmGKB
     ... 
