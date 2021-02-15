@@ -1,4 +1,4 @@
 from .Resolver import Resolver
-from .agents import IDLookupAgent, BioThingsAPIAgent
+from .agents import BioThingsAPIAgent
 
 from .predefined_resolvers import ChemResolver

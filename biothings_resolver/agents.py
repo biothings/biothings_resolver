@@ -1,76 +1,152 @@
+import copy
 import re
-from typing import Dict, Iterable, Optional, Union, List, Pattern, Callable
+
+from typing import (Dict, Iterable, Optional, Union, List, Pattern, Callable,
+                    Collection, Mapping, Any)
 
 import biothings_client
 
 from .utils import dict_get_nested
 
 
-class IDLookupAgent:
-    """Base Agent Class"""
+class ResolverAgent:
+    """
+    Base Agent Class
+    """
     def __init__(self):
-        super(IDLookupAgent, self).__init__()
+        super().__init__()
+    
+    @property
+    def input_type(self) -> str:
+        raise NotImplementedError
+    
+    @property
+    def output_types(self) -> List[str]:
+        raise NotImplementedError
 
-    def lookup(self, id_values: Iterable[str]) -> Dict[str, Optional[str]]:
+    @property
+    def max_batch_size(self) -> Optional[int]:
+        raise NotImplementedError
+    
+    def lookup(self, input_values: Collection, output_types: Collection[str]) \
+            -> List[Mapping[str, list]]:
+        """
+        Lookup Output Values
+
+        To Agent Implementers: Because input value may be non-hashable,
+        it has been decided that the output will be in the same order as input
+        so that non-hashable inputs can be handled.
+        """
         raise NotImplementedError
 
 
-class BioThingsAPIAgent(IDLookupAgent):
+class RegExAgent(ResolverAgent):
+    def __init__(self, from_regex: Union[str, Pattern],
+                 to_regex: Union[str, Pattern, Callable],
+                 input_type: str, output_types: List[str]):
+        super().__init__()
+        self.from_regex = from_regex
+        self.to_regex = to_regex
+        self._in_type = input_type
+        self._out_types = output_types.copy()
+
+    @property
+    def max_batch_size(self) -> Optional[int]:
+        return None
+
+    @property
+    def input_type(self) -> str:
+        return self._in_type
+
+    @property
+    def output_types(self) -> List[str]:
+        return self._out_types.copy()
+
+    def lookup(self, input_values: Collection[str],
+               output_types) -> List[Dict[str, List[str]]]:
+        out_list = []
+        output_types = list(output_types)
+        for in_value in input_values:
+            # re.sub auto caches compiled patterns
+            out_value = re.sub(self.from_regex, self.to_regex, in_value)
+            out = {}
+            for k in output_types:
+                out[k] = [out_value]
+                # this way it is a different list with same content
+            out_list.append(out)
+        return out_list
+
+
+class BioThingsAPIAgent(ResolverAgent):
     def __init__(self, biothings_type: str,
-                 search_scope: Union[List[str], str],
-                 value_fields: Union[List[str], str]):
+                 input_type: str,
+                 search_scope: Collection[str],
+                 output_fields: Mapping[str, Collection[str]]):
 
         super().__init__()
-        self.client: biothings_client.BiothingClient = biothings_client.get_client(biothings_type)
-        self.search_scope = search_scope if type(search_scope) is list else [search_scope]
-        self.value_fields = value_fields if type(value_fields) is list else [value_fields]
+        self.client: biothings_client.BiothingClient = \
+            biothings_client.get_client(biothings_type)
+        self._in_type = input_type
+        self._out_types = list(output_fields.keys())
+        self.search_scope = list(search_scope)
+        # forward mapping to build the list of fields during search
+        self.out_fwd_map = {}
+        for k, v in output_fields.items():
+            self.out_fwd_map[k] = set(v)  # use set for de-dup
+        self.out_back_map = {}
+        for k, v in self.out_fwd_map.items():
+            for field_name in v:
+                if field_name in self.out_back_map:
+                    raise ValueError("one field used in multiple output types")
+                self.out_back_map[field_name] = k
 
-    def lookup(self, id_values: Iterable[str]) -> Dict[str, Optional[str]]:
-        final_result = {}
-        id_set = set(str(i) for i in id_values)  # speeds up __contains__
-        # here, we can replace with requests
-        results = self.client.querymany(list(id_set), scopes=self.search_scope,
-                                        fields=self.value_fields, verbose=False)
+    @property
+    def input_type(self) -> str:
+        return self._in_type
+
+    @property
+    def output_types(self) -> List[str]:
+        return self._out_types.copy()
+
+    @property
+    def max_batch_size(self) -> Optional[int]:
+        return 1000
+
+    def lookup(self, input_values: Collection, output_types: Collection[str]) \
+            -> List[Dict[str, list]]:
+        fields_set = set()
+        for output_type in output_types:
+            fields_set.union(self.out_fwd_map[output_type])
+        search_fields = list(fields_set)
+        search_items = list(input_values)
+        items_idx = {}
+        for idx, item in enumerate(search_items):
+            items_idx.setdefault(str(item), []).append(idx)
+            # we know this would be str
+
+        results = self.client.querymany(search_items, scopes=self.search_scope,
+                                        fields=search_fields, verbose=False)
+        final_output = [{} for _ in range(len(search_items))]
+        # so that users who attempt to modify w/o copy will not be screwed
         for result in results:
             k = result.get('query')
             if k is None:
                 continue  # bad record
-            elif k in id_set:
+            elif str(k) in items_idx:
                 if result.get('notfound', False):
-                    final_result[k] = None
-                    continue  # resume the loop, we don't have what we want
+                    continue
+                    # resume the loop, we don't have what we want, leave as {}
                 else:
-                    output = set()
-                    for value_key in self.value_fields:
+                    out = {}
+                    for value_key, out_type in self.out_back_map.items():
                         lookup_value = dict_get_nested(result, value_key)
                         if lookup_value is not None:
-                            output.add(str(lookup_value))
+                            out.setdefault(out_type, []).append(lookup_value)
                         else:  # did not find value, continue to next
                             continue
-                    if len(output) == 0:
-                        final_result[k] = None
-                    elif len(output) == 1:
-                        final_result[k] = output.pop()
-                    else:
-                        final_result[k] = list(output)
+                    for idx in items_idx[str(k)]:
+                        final_output[idx] = copy.deepcopy(out)
+                        # same document, multiple copies
             else:
                 pass  # was here for debugging when query was not str
-        for missing_key in (id_set - set(final_result.keys())):
-            # in the weird case that the API did not reply our query
-            final_result[missing_key] = None
-        return final_result
-
-
-class RegExAgent(IDLookupAgent):
-    def __init__(self, from_regex: Union[str, Pattern],
-                 to_regex: Union[str, Pattern, Callable]):
-        super().__init__()
-        self.from_regex = from_regex
-        self.to_regex = to_regex
-
-    def lookup(self, id_values: Iterable[str]) -> Dict[str, str]:
-        out = {}
-        for id_value in id_values:
-            out[id_value] = re.sub(self.from_regex, self.to_regex, id_value)
-            # re.sub auto caches compiled patterns
-        return out
+        return final_output

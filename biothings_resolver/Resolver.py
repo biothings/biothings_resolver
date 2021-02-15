@@ -31,15 +31,103 @@ To use an agent, it has to be registered in an `IDLookup` instance.
 """
 
 import copy
-import itertools
 import logging
+from collections import OrderedDict
 from functools import wraps
 from typing import List, Dict, Optional, Tuple, Union, Callable, Iterable, \
-    Generator, Sequence, Mapping, Set, MutableMapping, Any, Collection
+    Generator, Sequence, Mapping, Set, Any, Collection
+from uuid import UUID, uuid4
 
-from .containers import AgentsContainer, CPDict, CanonDict
+from .agents import ResolverAgent
 from .curie import split_curie
 from .utils import dict_get_nested
+
+
+# define data types for performance and code readability
+# some say __slots__ magic more performant than namedtuple
+class _ValueRecord:
+    __slots__ = ('value', 'type', 'origin')
+
+    def __init__(self, value: Any, value_type: str,
+                 origin: Optional[Tuple[UUID, UUID]] = None):
+        self.value = value
+        self.type: str = value_type
+        self.origin: Optional[Tuple[UUID, UUID]] = origin
+        # origin: (source_value, agent)
+
+
+class _BufferObj:
+    __slots__ = ('_data', 'failed', 'type', 'done', 'paths', 'resolved')
+
+    def __init__(self):
+        self._data: Dict[UUID, _ValueRecord] = dict()
+        self.failed: Dict[UUID, Dict[UUID, Set[str]]] = dict()
+        self.type: Dict[str, Set[UUID]] = dict()
+        self.paths: Dict[Tuple[UUID, UUID], List[UUID]] = dict()
+        self.done: bool = False
+        self.resolved: Dict[UUID, Dict[str, Dict[UUID, Set[UUID]]]] = dict()
+        # source_uuid, output_type, agent_uuid, result_uuids
+
+    def __getitem__(self, item) -> _ValueRecord:
+        return self._data[item]
+
+    @property
+    def data(self):  # I would prefer if there's a way to get a read-only view
+        return self._data
+
+    def add_value(self, value: _ValueRecord) -> UUID:
+        u = uuid4()  # I don't see how this needs to be distributed
+        self._data[u] = value
+        self.type.setdefault(value.type, set()).add(u)
+        if value.origin:
+            source, agent = value.origin
+            self.resolved.setdefault(
+                source, dict()
+            ).setdefault(
+                value.type, dict()
+            ).setdefault(
+                agent, set()
+            ).add(u)
+        return u
+
+    def add_path(self, start: UUID, path: List[UUID],
+                 agents: Dict[UUID, ResolverAgent]):
+        """
+        Add a path(s) into object
+
+        Handles intermediate resolved results
+
+        Args:
+            path: list of reversed path (first step is the last element)
+        """
+        path = path.copy()
+        agent = path.pop()
+        if len(path) > 0:
+            next_agent = path[-1]
+            next_type = agents[next_agent].input_type
+            try:
+                results = self.resolved[start][next_type][agent]
+                for intermediate_result in results:
+                    self.add_path(intermediate_result, path, agents)
+                    return None
+            except KeyError:
+                pass
+        # only when this is the only step, or the first non-resolved step
+        # we add it to paths
+        # - failed agents won't be added because it's eliminated during
+        #   path finding
+        # - one step resolve won't be resolved twice because it's the last step
+        #   so either it has failed or got a result
+        self.paths[(start, agent)] = path
+
+
+class _PathInfo:
+    __slots__ = ('agents', 'start', 'cost')
+    def __init__(self, start: UUID, agents: List[UUID],
+                 cost: float = float('inf')):
+        self.start = start
+        self.agents = agents.copy()
+        self.cost = cost
 
 
 class Resolver:
@@ -97,72 +185,59 @@ class Resolver:
     def __init__(self):
         super(Resolver, self).__init__()
         self.logger = logging.getLogger('biothings_resolver')
-        self.logger.setLevel(logging.CRITICAL)
+
+        self.agents: Dict[UUID, ResolverAgent] = {}
+        self.agent_costs: Dict[Tuple[UUID, str], float] = {}
         self.preferred: List[str] = []
-        self.agents = AgentsContainer(cache_size=128)
-        self.batch_size = 1000
-        # now we store failed processors on a per id basis
-        self.id_failed_agents = {}
-
-        self.curie_in_xfrm: \
-            MutableMapping[str, Callable[[str], Optional[str]]] = CPDict()
-        self.curie_out_xfrm: \
-            MutableMapping[str, Callable[[str], Optional[str]]] = CPDict()
-
-        self.in_xfrm: MutableMapping[str, Callable] = CanonDict()
-        self.out_xfrm: MutableMapping[str, Callable] = CanonDict()
-
-        # (id_t, id_v): List[(prev. id_t, id_v, agt)]
-        self.resolver_trace: Dict[Tuple[str, str], Set[tuple]] = {}
-
-        self.document_resolve_id_field = '_id'
-
         self.expand = False
 
-        self.decorators = Decorators(self)
+        self.multiple_input_operation = 'any'  # rename, intersection, any
 
-        self._debug = False
+        self.max_buffer_size = 5000
+        self.max_batch_size = 1000
+        self.max_path_length = 3
 
-        self._opt_cnf = {
-            'vt_key': '\x00\x00\x00\x00*origin_vt',  # key for value types
-        }
-
-    @property
-    def debug(self) -> bool:
-        """bool:Debug setting
-
-        Controls whether debugging information will be output using the
-        standard logging utilities. It will be the same as setting up logging
-        manually, this is only a convenience feature.
-
-        Notes:
-            To observe how a single input is resolved, set :py:attr:`debug` to
-            `True` and invoke any resolving functions with a single input.
-
-        """
-        return self._debug
-
-    @debug.setter
-    def debug(self, v: bool):
-        if v:
-            self.logger.setLevel(logging.DEBUG)
-        else:
-            self.logger.setLevel(logging.CRITICAL)
-        self._debug = v
+        # TODO: xfrms
 
     @property
-    def max_path_length(self) -> int:
-        """int:Maximum number of agents to go through during resolve.
-        """
-        return self.agents.max_path
+    def _agents_from_src(self) -> Dict[str, Set[UUID]]:
+        flat_graph = {}
+        for agent_uuid, agent in self.agents.items():
+            i_type = agent.input_type
+            flat_graph.setdefault(i_type, set()).add(agent_uuid)
+        return flat_graph
 
-    @max_path_length.setter
-    def max_path_length(self, length: int) -> None:
-        self.agents.frozen = False
-        self.agents.max_path = length
-        self.agents.frozen = True
+    def _compute_paths_for_obj(self, obj: _BufferObj):
+        # resolve step should not care if a type already exist in input
+        potential_paths = {}
+        for u, value in obj.data.items():
+            wanted_types = set(self.preferred) - set(obj.resolved[u].keys())
+            if value.origin is not None:
+                continue  # ignore for non-input (i.e. intermediate) values
+            failed = obj.failed[u]
+            path_info = self.resolve_path(value.type, wanted_types,
+                                          frozenset(failed))
+            for dst_type, path_cost in path_info.items():
+                potential_paths.setdefault(dst_type, dict())[u] = path_cost
+        # let's forget about expand and union/intersect for now
+        # FIXME: implement those parts later
+        if self.expand or self.multiple_input_operation != 'any':
+            raise NotImplementedError
+        if not self.expand:
+            for pref_type in self.preferred:
+                if pref_type in potential_paths:
+                    paths = potential_paths[pref_type]
+                    best_path_uuid = sorted(paths, key=lambda x: x[1])[0]
+                    path = list(reversed(paths[best_path_uuid]))
+                    obj.add_path(best_path_uuid, path, self.agents)
+                    return
+            obj.done = True
 
-    def resolve(self, in_values: Collection[Dict[str, Any]]) -> \
+        # deal with expand/ (any/union/intersect)
+        # in case of expand=F, op=any, we should stop as soon as we have
+        # one of the resolved
+
+    def resolve(self, input_objects: Iterable[Mapping[str, Iterable]]) -> \
             Generator[Dict[str, list], None, None]:
         """Resolve values
 
@@ -192,138 +267,162 @@ class Resolver:
 
 
         Args:
-            in_values: Ordered collection of dicts, where keys are CURIE-prefix
-                style str indicators of value types.
+            input_objects: Ordered collection of dicts, where keys are
+            CURIE-prefix style str indicators of value types.
         Yields:
             dicts where keys are CURIE-prefix style and values are list of
                 resolved values.
         """
-        it = iter(in_values)
-        while True:
-            chunk_input = list(itertools.islice(it, self.batch_size))
-            num_docs = len(chunk_input)
-            if num_docs == 0:
-                break
-            # canonicalize not needed here, the method below handles that
-            yield from self.resolve_identifier(chunk_input)
-        return None
-
-    def resolve_identifier(self, ids: Sequence[Mapping[str, str]]) -> \
-            Generator[Dict[str, List[str]], None, None]:
-        input_ids: List[Dict[str, List[str]]] = []
-        # convert input
-        vt_key = self._opt_cnf['vt_key']
-        for id_struct in ids:
-            d = {
-                vt_key: []
-            }
-            for id_t, id_v in id_struct.items():
-                # FIXME: MOVE to an appropriate place
-                # canonicalize id type
-                id_t = self.agents.prefixes.get_canon_key(id_t)
-                if not id_t:
-                    continue
-                # convert each id to list of str
-                if isinstance(id_v, list):
-                    d[id_t] = [str(x) for x in id_v]
-                else:
-                    d[id_t] = [str(id_v)]
-                d[vt_key].append(id_t)
-            input_ids.append(d)
-        while True:
-            # build lookup path for each id
-            resolve_q = self._build_resolve_queue(input_ids)
-            if len(resolve_q) == 0:
-                break  # exit loop when nothing to do
-            agent_resolve_id_info = {}  # what id should each agent lookup
-            paths = []  # "linked" paths, one agent points to the next
-            id_path = [-1] * len(input_ids)
-            for path_idx, (path, items) in enumerate(resolve_q.items()):
-                # populate the items for the first agent in path
-                agent_resolve_id_info.setdefault(path[0], []).extend(items)
-                path_link = {}
-                for a1_name, a2_name in zip(path[:-1], path[1:]):
-                    path_link[a1_name] = a2_name
-                paths.append(path_link)
-                for ids_idx, _, _ in items:
-                    id_path[ids_idx] = path_idx
-            lookup_order = self._topological_sort(resolve_q.keys())
-            for agent_name in lookup_order:
-                src_t, tgt_t, _, agent = self.agents.raw_agents[agent_name]
-                src_values = {}  # map values back to original indices
-                for idx_info in agent_resolve_id_info.get(agent_name, []):
-                    ids_idx, id_t, idv_idx = idx_info
-                    src_idv = input_ids[ids_idx][id_t][idv_idx]  # id_value
-                    src_values.setdefault(src_idv, []).append(ids_idx)
-                if len(src_values.keys()) == 0:
-                    continue  # in the case nothing is left
-                results = agent.lookup(src_values.keys())
-                for src_idv, indices in src_values.items():
-                    result = results.get(src_idv, None)
-                    if result is None:
-                        self.logger.info("%s did not process %s:%s",
-                                         agent_name, src_t, src_idv)
-                        for (id_t, id_v), failed_path in self._build_fail_path(
-                                (src_t, src_idv), [agent_name]
-                        ):
-                            self.id_failed_agents.setdefault(
-                                (id_t, id_v), set()).add(failed_path)
-                            self.logger.debug(
-                                "adding reject path %s to (%s, %s)",
-                                failed_path, id_t, id_v
-                            )
-                        continue
-                    if isinstance(result, list):
-                        result = [str(r) for r in result]
-                    else:
-                        result = [str(result)]
-                    self.logger.debug("got %s:%s -> %s:%s", src_t,
-                                      src_idv, tgt_t, result)
-                    # update trace
-                    for r in result:
-                        self.resolver_trace.setdefault(
-                            (tgt_t, r), set()
-                        ).add((src_t, src_idv, agent_name))
-                    for ids_idx in indices:
-                        id_l = input_ids[ids_idx].setdefault(tgt_t, [])
-                        orig_len = len(id_l)
-                        # FIXME: deal with dupes
-                        id_l.extend(result)
-                        curr_len = len(id_l)
-                        path_id = id_path[ids_idx]
-                        assert path_id != -1  # -1 means no path assigned
-                        next_agent = paths[path_id].get(agent_name, None)
-                        if next_agent:
-                            agent_resolve_id_info.setdefault(
-                                next_agent, []
-                            ).extend([(ids_idx, tgt_t, v)
-                                      for v in range(orig_len, curr_len)])
-                    self.logger.debug("updated %s", indices)
-            # end of while loop
-        for id_struct in input_ids:
-            od = {}
-            for id_t in self.preferred:
-                if id_t in id_struct:
-                    # FIXME: same as above
-                    id_t_canon = self.agents.prefixes.get_canon_key(id_t)
-                    od[id_t] = list(set(id_struct[id_t_canon]))
-                    if self.expand:
-                        continue
-                    else:
+        buffer = OrderedDict()
+        per_agent_queue: Dict[UUID, List[Tuple[UUID, UUID]]] = {}
+        for in_obj in input_objects:
+            # we are going to need per input-value level
+            # failure info
+            u = uuid4()
+            o = _BufferObj()
+            for vt, values in in_obj.items():
+                for value in values:
+                    d = _ValueRecord(copy.deepcopy(value), vt)
+                    o.add_value(d)
+            self._compute_paths_for_obj(o)
+            for start, agent in o.paths:
+                per_agent_queue.setdefault(agent, list()).append((u, start))
+            buffer[u] = o
+            verified_no_queue_full = False
+            while not verified_no_queue_full:
+                for agent_uuid, queue in per_agent_queue.items():
+                    if len(queue) > min(self.max_batch_size,
+                                        self.agents[agent_uuid].max_batch_size):
+                        self._handle_agent_queue(agent_uuid, queue, buffer)
                         break
-            yield od
+                else:  # no breaks occur == no len(queue) > max size
+                    verified_no_queue_full = True
+            if len(buffer) >= self.max_buffer_size:
+                self._handle_buffer(buffer)  # try to yield first item
+                self._yield_buffer(buffer)
+        # clear the buffer after no more inputs
+        while len(buffer) >= 0:
+            self._handle_buffer(buffer)
+            yield from self._yield_buffer(buffer)
 
-    # recursively build failure trace
-    def _build_fail_path(self, prev_id: Tuple[str, str], path: list):
-        yield prev_id, tuple(reversed(path))
-        if prev_id not in self.resolver_trace:
-            return
-        for id_t, id_v, a_name in self.resolver_trace[prev_id]:
-            if a_name in path:
-                continue
-            new_path = path.copy()
-            new_path.append(a_name)
-            yield from self._build_fail_path((id_t, id_v), new_path)
+    def _handle_agent_queue(self, agent_uuid: UUID,
+                            queues: Dict[UUID, List[Tuple[UUID, UUID]]],
+                            buffer: Mapping[UUID, _BufferObj]):
+        queue = queues.get(agent_uuid, [])
+        agent = self.agents[agent_uuid]
+        resolve_types = agent.output_types
+        input_values = []
+        input_ids = []
+        for ids in queue:
+            bufobj_id, value_id = ids
+            value = buffer[bufobj_id].data[value_id].value
+            input_values.append(value)
+            input_ids.append(ids)
+        results = agent.lookup(input_values, resolve_types)
+        for (bufobj_id, value_id), result in zip(input_ids, results):
+            bufobj = buffer[bufobj_id]
+            # pop the path. If we will add later if new_value has what we need
+            path = bufobj.paths.pop((value_id, agent_uuid))
+            try:
+                n_agent_id = path.pop()
+                nxt_type = self.agents[n_agent_id].input_type
+            except IndexError:
+                n_agent_id = None
+                nxt_type = None
+            failed = set(resolve_types) - result.keys()
+            # update successful ones
+            for r_type, r_values in result.items():
+                for r_value in r_values:
+                    vr = _ValueRecord(r_value, r_type, (value_id, agent_uuid))
+                    n_value_id = bufobj.add_value(vr)
+                    # handle path
+                    if r_type == nxt_type:
+                        # new values certainly not cached
+                        # path is certainly not zero length
+                        bufobj.paths[(n_value_id, n_agent_id)] = path.copy()
+                        queues.setdefault(n_agent_id, list()).append(
+                            (bufobj_id, n_value_id)
+                        )
+            # update failed ones
+            for f_type in failed:
+                bufobj.failed.setdefault(value_id, dict()).setdefault(
+                    agent_uuid, set()
+                ).add(f_type)
+
+    def _handle_buffer(self, buffer):
+        """
+        Do whatever to mark the first item as done
+        """
+        pass
+
+    def _yield_buffer(self, buffer: OrderedDict[UUID, _BufferObj]):
+        del_items = []
+        for obj_id, obj in buffer.items():
+            if not obj.done:
+                break
+            copy = True
+            output = {}
+            for o_type in self.preferred:
+                v_ids = obj.type.get(o_type, set())
+                o_list = []
+                for v_id in v_ids:
+                    vr = obj.data[v_id]
+                    assert vr.type == o_type
+                    if copy is True:
+                        o_list.append(vr.value)
+                    elif vr.origin is not None:
+                        o_list.append(vr.value)
+                if o_list:  # non-empty
+                    output[o_type] = o_list
+                    if not self.expand:
+                        break
+            yield output
+            del_items.append(obj_id)
+        for obj_id in del_items:
+            del buffer[obj_id]
+
+    def resolve_path(self, src: str, dsts: Collection[str],
+                     failed_combos: frozenset) \
+            -> Dict[str, Tuple[Tuple[UUID, ...], float]]:
+        # I think we can call this BFS with pruning? we start from src
+        # and visit everything, but only keeping the most economical
+        flat_graph = self._agents_from_src
+        paths = {src: ([], 0.)}
+        for path_length in range(self.max_path_length):
+            srcs = []
+            for src, (path, running_cost) in paths.items():
+                if len(path) != path_length:
+                    continue  # only do new ones
+                srcs.append(src)
+            while len(srcs) > 0:
+                src = srcs.pop()
+                path, running_cost = paths[src]
+                if src not in flat_graph:
+                    continue
+                for agent_uuid in flat_graph[src]:
+                    agent = self.agents[agent_uuid]
+                    for o_type in agent.output_types:
+                        if (agent_uuid, o_type) in failed_combos:
+                            continue
+                        new_cost = self.agent_costs.get(
+                            (agent_uuid, o_type), 1.0
+                        ) + running_cost
+                        _, o_c = paths.get(o_type, ([], float('inf')))
+                        if new_cost < o_c:
+                            new_path = path.copy()
+                            new_path.append(agent_uuid)
+                            # the path length changed so no process in this
+                            # loop. update path to shorter ver. and process
+                            # next loop
+                            if o_type in srcs:
+                                srcs.remove(o_type)
+                            paths[o_type] = (new_path, new_cost)
+        wanted_paths = {}
+        for dst in dsts:
+            path, cost = paths.get(dst, (None, None))
+            if path:
+                wanted_paths[dst] = (tuple(path), cost)
+        return wanted_paths
 
     @staticmethod
     def _topological_sort(tasks: Iterable[Iterable[str]]) -> List[str]:
@@ -354,41 +453,6 @@ class Resolver:
             # FIXME: we can break cycles (just requires extra lookup)
             raise RuntimeError("Loop in dependency graph for agents")
         return tasks_order
-
-    def _build_resolve_queue(self, input_ids):
-        resolve_queue = {}  # path: starting point tuple
-        for id_idx, id_struct in enumerate(input_ids):
-            # anything we already have has initial cost of 0
-            # hence why we store them and use them as available sources
-            # we store/retrieve failed agents per "starting point"
-            for target in self.preferred:
-                if target in id_struct:
-                    if self.expand:
-                        continue
-                    else:
-                        break
-                possible_paths = {}
-                for id_t in id_struct[self._opt_cnf['vt_key']]:
-                    id_vs = id_struct.get(id_t)
-                    for idv_idx, idv in enumerate(id_vs):
-                        rej_starts = self.id_failed_agents.get((id_t, idv), [])
-                        path, cost = self.agents.shortest_path_v2(
-                            id_t, target, rej_starts
-                        )
-                        if path is not None:
-                            possible_paths[(id_t, idv_idx, path)] = cost
-                if len(possible_paths) == 0:
-                    continue
-                id_t, idv_idx, path = min(possible_paths,
-                                          key=possible_paths.get)
-                if path is not None:
-                    resolve_queue.setdefault(path, []).append(
-                        (id_idx, id_t, idv_idx)
-                    )
-                    break  # found a valid path
-            else:  # no valid path found
-                pass
-        return resolve_queue
 
     def resolve_curie(self, curies: Sequence[str]) -> \
             Generator[List[str], None, None]:

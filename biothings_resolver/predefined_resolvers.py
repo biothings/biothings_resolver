@@ -2,14 +2,6 @@ from .Resolver import Resolver
 from . import BioThingsAPIAgent
 
 
-def _bt_chem(scope, fields):
-    return BioThingsAPIAgent('chem', scope, fields)
-
-
-def _bt_gene(scope, fields):
-    return BioThingsAPIAgent('gene', scope, fields)
-
-
 class ChemResolver(Resolver):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -62,16 +54,17 @@ class ChemResolver(Resolver):
             },
         }
         for (src_t, src_f), tgt_dict in mychem_fields.items():
+            output_fields = {}
+            agent_name = f'chem_{src_t}'
             for tgt_t, info in tgt_dict.items():
                 tgt_f = info['f']
-                cost_forward = info.get('cf', DEFAULT_COST_FORWARD)
+                output_fields.setdefault(tgt_t, []).append(tgt_f)
+                cost_forward = info.get('cf', None)
+                if cost_forward:
+                    self.agent_costs[(agent_name, tgt_t)] = cost_forward
                 cost_backward = info.get('cb', DEFAULT_COST_BACKWARD)
-                self.agents.add(
-                    src_t, tgt_t, _bt_chem(src_f, tgt_f), cost_forward
-                )
-                self.agents.add(
-                    tgt_t, src_t, _bt_chem(tgt_f, src_f), cost_backward
-                )
+            agent = BioThingsAPIAgent('chem', src_t, [src_f], output_fields)
+            self.agents[agent_name] = agent
 
         inchi_fields = [
             'pubchem.inchi',
@@ -85,16 +78,13 @@ class ChemResolver(Resolver):
         ]
 
         # inchi to inchikey (direct route)
-        self.agents.add('inchi', 'inchikey', BioThingsAPIAgent('chem', inchi_fields, inchikey_fields), cost=0.5)
+        # self.agents.add('inchi', 'inchikey', BioThingsAPIAgent('chem', inchi_fields, inchikey_fields), cost=0.5)
 
         # we supply a default preference list
         self.preferred = ['INCHIKEY', 'UNII', 'DRUGBANK', 'CHEBI',
                           'CHEMBL.COMPOUND', 'PUBCHEM.COMPOUND']
 
-        self.agents.frozen = True
 
-        self.curie_in_xfrm['CHEBI'] = lambda x: x
-        self.curie_out_xfrm['CHEBI'] = lambda x: x.replace('CHEBI:', '', 1)
 
 
 class GeneResolver(Resolver):
